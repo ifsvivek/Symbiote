@@ -1,8 +1,8 @@
 # 🧬 Symbiote
 
-> *Your Code. Your Style. Your AI Shadow.*
+> _Your Code. Your Style. Your AI Shadow._
 
-**Symbiote** is an intelligent, adaptive coding assistant that *learns how you code*—and then becomes your snarky, ever-evolving sidekick. It observes, remembers, critiques (sometimes too honestly), and writes code in your *exact* style, almost like your second brain... if your second brain had better linting skills.
+**Symbiote** is an intelligent, adaptive coding assistant that _learns how you code_—and then becomes your snarky, ever-evolving sidekick. It observes, remembers, critiques (sometimes too honestly), and writes code in your _exact_ style, almost like your second brain... if your second brain had better linting skills.
 
 Powered by **LangGraph**, **LangChain**, and **Gemini API**, Symbiote builds a personal graph of your habits, quirks, and coding rituals to deliver personalized suggestions, witty corrections, and hauntingly familiar code snippets.
 
@@ -10,28 +10,28 @@ Powered by **LangGraph**, **LangChain**, and **Gemini API**, Symbiote builds a p
 
 ## ✨ Features
 
-* 🧠 **Code Style Graphing**
-  Constructs a LangGraph of your syntax patterns, preferred APIs, folder structures, and logic flow.
+-   🧠 **Code Style Graphing**
+    Constructs a LangGraph of your syntax patterns, preferred APIs, folder structures, and logic flow.
 
-* 🛠 **Self-Updating Codex**
-  Continuously refines itself using LangChain agents to stay in sync with your evolving style. It's basically stalking your repo. (Not creepy, promise.)
+-   🛠 **Self-Updating Codex**
+    Continuously refines itself using LangChain agents to stay in sync with your evolving style. It's basically stalking your repo. (Not creepy, promise.)
 
-* 💬 **Sass-Enabled Feedback Mode™**
-  Optional snark included. Turn on “Tsundere Commentary” if you like your AI with a side of emotional damage. 😤
+-   💬 **Sass-Enabled Feedback Mode™**
+    Optional snark included. Turn on “Tsundere Commentary” if you like your AI with a side of emotional damage. 😤
 
-* 📚 **Contextual Code Generation (Gemini-Powered)**
-  Generates code that actually looks like you wrote it—bugs and all (but cleaner).
+-   📚 **Contextual Code Generation (Gemini-Powered)**
+    Generates code that actually looks like you wrote it—bugs and all (but cleaner).
 
-* 🧪 **Persona-Based PR Reviews**
-  Gemini agent reviews your pull requests based on your past coding behavior. Might even roast your old self.
+-   🧪 **Persona-Based PR Reviews**
+    Gemini agent reviews your pull requests based on your past coding behavior. Might even roast your old self.
 
 ---
 
 ## 🛠 Tech Stack
 
-* **LangGraph** — builds dynamic code pattern knowledge graphs.
-* **LangChain** — handles multi-agent orchestration & prompt routing.
-* **Gemini API** — does the heavy lifting for code understanding & generation.
+-   **LangGraph** — builds dynamic code pattern knowledge graphs.
+-   **LangChain** — handles multi-agent orchestration & prompt routing.
+-   **Gemini API** — does the heavy lifting for code understanding & generation.
 
 ---
 
@@ -96,20 +96,20 @@ python main.py --mode learn --path ./your/codebase
 
 ## 🧪 Future Features
 
-* VSCode Plugin
-* GitHub App for PR auto-commenting
-* Visual style graph dashboard
-* “Clone Me” mode (your evil AI twin?)
-* Support for team-wide personality blending
+-   VSCode Plugin
+-   GitHub App for PR auto-commenting
+-   Visual style graph dashboard
+-   “Clone Me” mode (your evil AI twin?)
+-   Support for team-wide personality blending
 
 ---
 
 ## 👨‍💻 Author
 
-Made by [Vivek Sharma](https://ifsvivek.in) — the type of dev whose AI assistant may become *too powerful*.
+Made by [Vivek Sharma](https://ifsvivek.in) — the type of dev whose AI assistant may become _too powerful_.
 
 ---
 
 ## 📝 License
 
-MIT — Use it, break it, improve it, sass it. Just don’t sell it as *your* symbiote. 😤
+MIT — Use it, break it, improve it, sass it. Just don’t sell it as _your_ symbiote. 😤

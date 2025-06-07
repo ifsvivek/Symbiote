@@ -1,0 +1,32 @@
+# Core LangChain ecosystem
+langgraph
+langchain
+langchain-community
+langchain-core
+langchain-google-genai
+
+# Google Generative AI
+google-genai
+
+# Vector stores and embeddings
+faiss-cpu
+# chromadb
+
+# Code parsing and analysis
+# tree-sitter
+# tree-sitter-languages
+# ast-utils
+
+# Data handling and utilities
+pydantic
+typing-extensions
+python-dotenv
+
+# Development and testing
+# pytest
+# black
+# flake8
+
+# Additional utilities for code analysis
+pathlib
+dataclasses-json
