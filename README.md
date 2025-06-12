@@ -16,6 +16,9 @@ Powered by **LangGraph**, **LangChain**, and **Gemini API**, Symbiote builds a p
 -   🤖 **AI-Powered Interactive Chat**
     Chat with your codebase! Ask questions, execute commands, modify files, and get intelligent suggestions.
 
+-   🔧 **Intelligent Tool System** _(NEW!)_
+    Autonomous tools with descriptive names (FileExplorer, GitManager, CodeAnalyzer) that chain operations and make intelligent decisions.
+
 -   🛠 **Multi-Language Code Parsing**
     Supports Python, JavaScript, TypeScript, Java, C++, Go, Rust, and more with deep syntax analysis.
 

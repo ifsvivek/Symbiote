@@ -35,6 +35,7 @@ from agents.style_learner import StyleLearnerAgent
 from utils.tools import SymbioteTools, create_symbiote_tools
 from utils.tool_executor import AutonomousToolExecutor, create_autonomous_tool_executor
 from utils.context_manager import SmartContextManager, create_smart_context_manager
+from utils.intelligent_tool_system import IntelligentToolSystem, create_intelligent_tool_system
 from dotenv import load_dotenv
 import json
 
@@ -81,6 +82,12 @@ class SymbioteCore:
 
         # Initialize smart context manager
         self.context_manager = create_smart_context_manager(
+            workspace_path=self.workspace_path,
+            debug=debug
+        )
+
+        # Initialize new intelligent tool system
+        self.intelligent_tools = create_intelligent_tool_system(
             workspace_path=self.workspace_path,
             debug=debug
         )
@@ -428,6 +435,7 @@ Provide only the code with brief explanations, no extra formatting.
             tools=self.tools,
             tool_executor=self.tool_executor,
             context_manager=self.context_manager,
+            intelligent_tools=self.intelligent_tools,
             gemini_api_key=self.gemini_api_key,
             debug=self.debug,
             sass_level=self.sass_level,
@@ -596,6 +604,42 @@ Provide only the code with brief explanations, no extra formatting.
         elif added_lines < 5:
             print("   • Small and focused changes - I like your style! 👌")
 
+    def _enhance_prompt_for_multi_step(self, user_input: str) -> str:
+        """Enhance the prompt to encourage multi-step command execution for common patterns."""
+        user_lower = user_input.lower()
+        suggestions = []
+        
+        # Common multi-step patterns
+        patterns = {
+            "cd to.*and.*": "Navigate to directory and perform file operations",
+            "go to.*and.*": "Navigate to directory and perform file operations", 
+            "navigate.*and.*": "Navigate to directory and perform file operations",
+            "check.*directory.*": "List directory contents and examine files",
+            "explore.*": "Navigate and explore directory structure",
+            "analyze.*file": "Navigate to file location and read content",
+            "explain.*file": "Navigate to file location and read content",
+            "show.*file": "Navigate to file location and read content",
+            "cd.*explain": "Navigate to directory and read target file",
+            "cd.*show": "Navigate to directory and read target file"
+        }
+        
+        for pattern, description in patterns.items():
+            import re
+            if re.search(pattern, user_lower):
+                suggestions.append(f"\nSuggested approach: {description}")
+                suggestions.append("Use multiple EXECUTE_COMMAND entries to:")
+                if "navigate" in description.lower() or "cd" in user_lower:
+                    suggestions.append("1. Navigate to the directory (cd [directory])")
+                    suggestions.append("2. List contents (ls -la)")
+                    if "file" in user_lower:
+                        suggestions.append("3. Read the file (cat [filename])")
+                break
+        
+        if suggestions:
+            return "\n" + "\n".join(suggestions) + "\n"
+        
+        return ""
+
 
 class SymbioteChatSession:
     """
@@ -609,6 +653,7 @@ class SymbioteChatSession:
         tools=None,
         tool_executor=None,
         context_manager=None,
+        intelligent_tools=None,
         gemini_api_key: Optional[str] = None,
         debug: bool = False,
         sass_level: int = 5,
@@ -618,6 +663,7 @@ class SymbioteChatSession:
         self.tools = tools  # This will be a SymbioteTools instance
         self.tool_executor = tool_executor  # This will be an AutonomousToolExecutor instance
         self.context_manager = context_manager  # This will be a SmartContextManager instance
+        self.intelligent_tools = intelligent_tools  # New intelligent tool system
         self.gemini_api_key = gemini_api_key
         self.debug = debug
         self.sass_level = sass_level
@@ -686,6 +732,42 @@ class SymbioteChatSession:
 
                     traceback.print_exc()
 
+    def _enhance_prompt_for_multi_step(self, user_input: str) -> str:
+        """Enhance the prompt to encourage multi-step command execution for common patterns."""
+        user_lower = user_input.lower()
+        suggestions = []
+        
+        # Common multi-step patterns
+        patterns = {
+            "cd to.*and.*": "Navigate to directory and perform file operations",
+            "go to.*and.*": "Navigate to directory and perform file operations", 
+            "navigate.*and.*": "Navigate to directory and perform file operations",
+            "check.*directory.*": "List directory contents and examine files",
+            "explore.*": "Navigate and explore directory structure",
+            "analyze.*file": "Navigate to file location and read content",
+            "explain.*file": "Navigate to file location and read content",
+            "show.*file": "Navigate to file location and read content",
+            "cd.*explain": "Navigate to directory and read target file",
+            "cd.*show": "Navigate to directory and read target file"
+        }
+        
+        for pattern, description in patterns.items():
+            import re
+            if re.search(pattern, user_lower):
+                suggestions.append(f"\nSuggested approach: {description}")
+                suggestions.append("Use multiple EXECUTE_COMMAND entries to:")
+                if "navigate" in description.lower() or "cd" in user_lower:
+                    suggestions.append("1. Navigate to the directory (cd [directory])")
+                    suggestions.append("2. List contents (ls -la)")
+                    if "file" in user_lower:
+                        suggestions.append("3. Read the file (cat [filename])")
+                break
+        
+        if suggestions:
+            return "\n" + "\n".join(suggestions) + "\n"
+        
+        return ""
+
     def _process_user_query(self, user_input: str):
         """Process user query with AI and tool execution."""
         if not self.gemini_client:
@@ -697,12 +779,22 @@ class SymbioteChatSession:
             if self._handle_direct_file_operations(user_input):
                 return
 
+            # Try intelligent tool execution first for direct commands
+            if self._execute_intelligent_tool_chain(user_input):
+                # Add to conversation history for context
+                self.conversation_history.append({"role": "user", "content": user_input})
+                self.conversation_history.append({"role": "assistant", "content": "Executed using intelligent tools"})
+                return
+
             # Add user input to conversation history
             self.conversation_history.append({"role": "user", "content": user_input})
 
             # Create context-aware prompt
             system_prompt = self._create_system_prompt()
             conversation_context = self._format_conversation_history()
+
+            # Enhance prompt for multi-step operations
+            enhanced_prompt = self._enhance_prompt_for_multi_step(user_input)
 
             full_prompt = f"""{system_prompt}
 
@@ -711,6 +803,7 @@ Recent conversation:
 {conversation_context}
 
 User query: {user_input}
+{enhanced_prompt}
 
 Please analyze the query and provide a helpful response. If you need to examine or modify files, explain what you're doing step by step. 
 
@@ -790,18 +883,20 @@ Be specific about file operations and always show what you're going to change.""
                 traceback.print_exc()
 
     def _should_auto_execute_tools(self, user_query: str, ai_response: str) -> bool:
-        """Determine if tools should be auto-executed based on user query and AI response patterns."""
+        """Determine if tools should be auto-executed based on user query and AI response."""
         user_lower = user_query.lower()
         ai_lower = ai_response.lower()
         
-        # Auto-execute for common analysis patterns in user query
+        # Auto-execute for common analysis requests
         analysis_patterns = [
-            "what does this code do",
-            "how does this work", 
-            "explain this code",
             "analyze this",
-            "debug this",
-            "fix this",
+            "what does this do",
+            "explain this", 
+            "how does this work",
+            "what is this",
+            "find bugs",
+            "review this",
+            "check this",
             "improve this",
             "optimize this",
             "show me the code",
@@ -836,6 +931,69 @@ Be specific about file operations and always show what you're going to change.""
             any(pattern in user_lower for pattern in analysis_patterns) or
             any(pattern in ai_lower for pattern in ai_action_patterns)
         )
+
+    def _execute_intelligent_tool_chain(self, user_query: str) -> bool:
+        """Execute intelligent tool chain based on user query."""
+        if not self.intelligent_tools:
+            return False
+        
+        try:
+            # Determine which tool to use based on query
+            query_lower = user_query.lower()
+            
+            # FileExplorer patterns
+            file_patterns = [
+                "read", "show", "open", "view", "cat", "display",
+                "list", "ls", "dir", "files", "directory",
+                "find", "search", "grep", "locate",
+                "analyze", "parse", "inspect", "examine"
+            ]
+            
+            # GitManager patterns  
+            git_patterns = [
+                "git", "status", "log", "diff", "branch", "commit",
+                "push", "pull", "history", "changes"
+            ]
+            
+            # CodeAnalyzer patterns
+            code_patterns = [
+                "complexity", "smells", "patterns", "metrics", "review",
+                "quality", "refactor", "issues"
+            ]
+            
+            # Determine which tool to use
+            tool_name = None
+            if any(pattern in query_lower for pattern in git_patterns):
+                tool_name = "GitManager"
+                print(f"\n📦 Using GitManager for: {user_query}")
+            elif any(pattern in query_lower for pattern in code_patterns):
+                tool_name = "CodeAnalyzer"
+                print(f"\n🔍 Using CodeAnalyzer for: {user_query}")
+            elif any(pattern in query_lower for pattern in file_patterns):
+                tool_name = "FileExplorer"
+                print(f"\n📁 Using FileExplorer for: {user_query}")
+            
+            if tool_name:
+                # Execute tool chain
+                chain = self.intelligent_tools.execute_tool_chain(tool_name, user_query)
+                
+                if chain.status.value in ["completed", "success"]:
+                    print(chain.final_output)
+                    return True
+                elif chain.status.value == "failed":
+                    print(f"❌ Tool execution failed")
+                    if chain.executions and chain.executions[-1].error_message:
+                        print(f"Error: {chain.executions[-1].error_message}")
+                    return False
+            
+            return False
+            
+        except Exception as e:
+            if self.debug:
+                print(f"❌ Error in intelligent tool execution: {e}")
+                import traceback
+                traceback.print_exc()
+            return False
 
     def _handle_direct_file_operations(self, user_input: str) -> bool:
         """Handle direct file operation commands from user."""
@@ -1106,15 +1264,30 @@ Terminal Commands You Can Execute:
 When users ask you to run terminal/shell commands, use this format:
 EXECUTE_COMMAND: [command]
 
+For multiple related commands, use multiple EXECUTE_COMMAND lines in sequence:
+EXECUTE_COMMAND: cd LocalBot
+EXECUTE_COMMAND: ls -la
+EXECUTE_COMMAND: cat LocalBot.py
+
+Common Multi-Step Patterns:
+- Directory navigation + file listing: cd [dir] → ls -la
+- Directory navigation + file reading: cd [dir] → cat [file]
+- Git operations: git status → git log --oneline -5
+- File analysis: ls -la → cat [file] → head -20 [file]
+- Python operations: python --version → pip list → python [script]
+
 Examples:
 - EXECUTE_COMMAND: ls -la
 - EXECUTE_COMMAND: git status
 - EXECUTE_COMMAND: npm install
 - EXECUTE_COMMAND: python test.py
-- EXECUTE_COMMAND: rm unwanted_file.txt
 
-IMPORTANT: Always use "EXECUTE_COMMAND: " prefix when you want to run a shell command.
-Do NOT simulate command output - actually execute the command when users request it.
+IMPORTANT: 
+- Always use "EXECUTE_COMMAND: " prefix when you want to run a shell command
+- When a task requires multiple steps, include ALL commands in your response
+- For directory navigation followed by file operations, use multiple commands
+- Do NOT simulate command output - actually execute the commands
+- Do NOT wait between commands - provide them all at once
 
 When modifying files:
 - I'll show you the current content first
@@ -1347,9 +1520,218 @@ and **directly modify your files** with your permission!
                     print(result)
 
     def _handle_terminal_commands(self, ai_response: str):
-        """Handle terminal command execution requests from AI responses."""
-        if self.tools:
-            self.tools.handle_terminal_commands(ai_response)
+        """Handle terminal command execution requests from AI responses with batch support."""
+        if not self.tools:
+            return
+            
+        # Parse all commands from AI response
+        commands = self.tools.parse_ai_file_commands(ai_response)
+        execute_commands = [cmd for cmd in commands if cmd['operation'] == 'execute']
+        
+        if not execute_commands:
+            return
+            
+        # If multiple commands, execute them as a batch
+        if len(execute_commands) > 1:
+            self._execute_command_batch(execute_commands)
+        else:
+            # Single command execution
+            cmd = execute_commands[0]
+            print(f"\n💻 Executing: {cmd['command']}")
+            success, output = self.tools.execute_terminal_command(cmd['command'])
+            print(output)
+            if not success:
+                print("❌ Command failed")
+
+    def _execute_command_batch(self, commands: List[Dict[str, str]]):
+        """Execute multiple commands in sequence and provide comprehensive output."""
+        print(f"\n🔄 Executing batch of {len(commands)} commands...")
+        print("=" * 60)
+        
+        batch_results = []
+        overall_success = True
+        current_directory = str(self.workspace_path)  # Track current directory
+        
+        # Process commands in sequence
+        i = 0
+        while i < len(commands):
+            cmd = commands[i]
+            command = cmd['command']
+            print(f"\n💻 [{i+1}/{len(commands)}] {command}")
+            print("-" * 40)
+            
+            # Handle cd commands specially by chaining with next command
+            if command.strip().startswith('cd '):
+                target_dir = command.strip()[3:].strip()
+                
+                # Update current directory tracking
+                if target_dir.startswith('/'):
+                    current_directory = target_dir
+                else:
+                    current_directory = str(Path(current_directory) / target_dir)
+                
+                # If there's a next command, chain it with cd
+                if i + 1 < len(commands):
+                    next_cmd = commands[i + 1]
+                    chained_command = f"cd {target_dir} && {next_cmd['command']}"
+                    
+                    print(f"🔗 Chaining with next command: {next_cmd['command']}")
+                    success, output = self.tools.execute_terminal_command(chained_command) if self.tools else (False, "No tools available")
+                    
+                    # Record both commands as executed
+                    batch_results.append({
+                        'command': command,
+                        'success': True,
+                        'output': f"Changed directory to {target_dir}",
+                        'index': i + 1
+                    })
+                    
+                    batch_results.append({
+                        'command': next_cmd['command'],
+                        'success': success,
+                        'output': output,
+                        'index': i + 2
+                    })
+                    
+                    # Skip the next command since we already executed it
+                    i += 2  # Skip both current and next command
+                    
+                    if success:
+                        print(f"✅ Success")
+                        if output.strip():
+                            print(output)
+                    else:
+                        print(f"❌ Failed")
+                        print(output)
+                        overall_success = False
+                else:
+                    # Just cd without next command
+                    batch_results.append({
+                        'command': command,
+                        'success': True,
+                        'output': f"Changed directory to {target_dir}",
+                        'index': i + 1
+                    })
+                    print(f"✅ Success - Changed directory to {target_dir}")
+                    i += 1
+            else:
+                # Regular command execution
+                success, output = self.tools.execute_terminal_command(command) if self.tools else (False, "No tools available")
+                
+                batch_results.append({
+                    'command': command,
+                    'success': success,
+                    'output': output,
+                    'index': i + 1
+                })
+                
+                if success:
+                    print(f"✅ Success")
+                    if output.strip():
+                        print(output)
+                else:
+                    print(f"❌ Failed")
+                    print(output)
+                    overall_success = False
+                    
+                    # Ask if user wants to continue on failure
+                    if i + 1 < len(commands):
+                        try:
+                            continue_choice = input(f"\n⚠️  Command {i+1} failed. Continue with remaining commands? (y/n): ").strip().lower()
+                            if continue_choice not in ['y', 'yes']:
+                                print("🛑 Batch execution stopped by user")
+                                break
+                        except KeyboardInterrupt:
+                            print("\n🛑 Batch execution interrupted")
+                            break
+                
+                i += 1
+        
+        # Provide comprehensive summary
+        self._show_batch_summary(batch_results, overall_success)
+
+    def _show_batch_summary(self, results: List[Dict], overall_success: bool):
+        """Show a comprehensive summary of batch command execution."""
+        print("\n" + "=" * 60)
+        print("📊 BATCH EXECUTION SUMMARY")
+        print("=" * 60)
+        
+        successful_commands = [r for r in results if r['success']]
+        failed_commands = [r for r in results if not r['success']]
+        
+        print(f"📈 Total Commands: {len(results)}")
+        print(f"✅ Successful: {len(successful_commands)}")
+        print(f"❌ Failed: {len(failed_commands)}")
+        print(f"🎯 Success Rate: {len(successful_commands)/len(results)*100:.1f}%")
+        
+        if failed_commands:
+            print(f"\n⚠️  Failed Commands:")
+            for result in failed_commands:
+                print(f"   {result['index']}. {result['command']}")
+        
+        if overall_success:
+            print(f"\n🎉 All commands executed successfully!")
+        else:
+            print(f"\n⚠️  Some commands failed. Check outputs above for details.")
+        
+        # Show key outputs if they contain useful information
+        self._highlight_important_outputs(results)
+        
+        print("=" * 60)
+
+    def _highlight_important_outputs(self, results: List[Dict]):
+        """Highlight important information from command outputs."""
+        important_patterns = [
+            'error', 'warning', 'failed', 'success', 'completed',
+            'installed', 'updated', 'created', 'deleted', 'modified',
+            'running', 'started', 'stopped', 'listening', 'port',
+            'version', 'found', 'not found', 'permission denied'
+        ]
+        
+        highlighted_results = []
+        
+        for result in results:
+            if not result['success']:
+                continue
+                
+            output_lower = result['output'].lower()
+            if any(pattern in output_lower for pattern in important_patterns):
+                # Extract important lines
+                lines = result['output'].split('\n')
+                important_lines = []
+                
+                for line in lines:
+                    line_lower = line.lower()
+                    if any(pattern in line_lower for pattern in important_patterns):
+                        important_lines.append(line.strip())
+                
+                if important_lines:
+                    highlighted_results.append({
+                        'command': result['command'],
+                        'highlights': important_lines[:3]  # Limit to 3 most important lines
+                    })
+        
+        if highlighted_results:
+            print(f"\n🔍 Key Information:")
+            for result in highlighted_results:
+                print(f"\n   📌 {result['command']}")
+                for highlight in result['highlights']:
+                    if highlight:
+                        print(f"      • {highlight}")
+
+    def _extract_multiple_commands(self, ai_response: str) -> List[str]:
+        """Extract multiple EXECUTE_COMMAND entries from AI response."""
+        commands = []
+        lines = ai_response.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith('EXECUTE_COMMAND:'):
+                command = line.replace('EXECUTE_COMMAND:', '').strip()
+                if command:
+                    commands.append(command)
+        
+        return commands
 
 
 def main():

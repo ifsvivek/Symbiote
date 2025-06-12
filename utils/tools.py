@@ -614,6 +614,37 @@ class SymbioteTools:
         except Exception as e:
             return f"Error analyzing import patterns: {str(e)}"
 
+    def _score_to_grade(self, score: float) -> str:
+        """Convert a numeric score to a letter grade."""
+        if score >= 0.9:
+            return "A"
+        elif score >= 0.8:
+            return "B"
+        elif score >= 0.7:
+            return "C"
+        elif score >= 0.6:
+            return "D"
+        else:
+            return "F"
+
+    def _get_maintainability_recommendations(self, score_components: Dict[str, float]) -> List[str]:
+        """Generate maintainability recommendations based on scores."""
+        recommendations = []
+        
+        if score_components.get("complexity_score", 0) < 0.7:
+            recommendations.append("Reduce function complexity by breaking down large functions")
+        
+        if score_components.get("documentation_score", 0) < 0.7:
+            recommendations.append("Improve documentation coverage")
+        
+        if score_components.get("naming_score", 0) < 0.7:
+            recommendations.append("Standardize naming conventions")
+        
+        if score_components.get("organization_score", 0) < 0.7:
+            recommendations.append("Break down large functions into smaller ones")
+        
+        return recommendations
+
     # AI-Powered Tools Implementation
 
     def generate_ai_insights(self, code_sample: str) -> str:
@@ -2016,6 +2047,171 @@ class SymbioteTools:
                     return f"Error executing tool '{tool_name}': {e}"
 
         return f"Error: Tool '{tool_name}' not found."
+
+    # Missing Methods Implementation - Adding methods called by main.py
+
+    def smart_command_parser(self, user_input: str, ai_response: str, workspace_context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Parse user input to detect file operation commands."""
+        operations = []
+        user_lower = user_input.lower().strip()
+        
+        # Simple pattern matching for file operations
+        patterns = {
+            'read': ['read', 'show', 'display', 'view', 'cat'],
+            'modify': ['modify', 'edit', 'change', 'update', 'fix'],
+            'create': ['create', 'make', 'new', 'generate']
+        }
+        
+        # Look for file extensions in the input
+        file_extensions = ['.py', '.js', '.ts', '.java', '.cpp', '.c', '.h', '.txt', '.md']
+        detected_files = []
+        
+        words = user_input.split()
+        for word in words:
+            clean_word = word.strip('.,!?()[]{}":;')
+            for ext in file_extensions:
+                if ext in clean_word and not clean_word.startswith('http'):
+                    detected_files.append(clean_word)
+        
+        # If no files detected, try workspace context
+        if not detected_files and workspace_context:
+            recent_files = workspace_context.get("recent_files", [])
+            if recent_files:
+                detected_files = [str(recent_files[0])]  # Use most recent file
+        
+        # Match operations with detected files
+        for operation, keywords in patterns.items():
+            if any(keyword in user_lower for keyword in keywords):
+                for file_path in detected_files:
+                    operations.append({
+                        'operation': operation,
+                        'file_path': file_path,
+                        'confidence': 0.8  # Basic confidence score
+                    })
+                    
+        return operations
+
+    def execute_file_operation(self, operation: str, file_path: str) -> str:
+        """Execute a file operation (read, modify, create)."""
+        try:
+            if operation == "read":
+                return self.read_file_content(file_path)
+            elif operation == "modify":
+                return f"File modification requires specific instructions. Use interactive_file_modification instead."
+            elif operation == "create":
+                return f"File creation requires content. Use create_file method instead."
+            else:
+                return f"Unknown operation: {operation}"
+        except Exception as e:
+            return f"Error executing {operation} on {file_path}: {str(e)}"
+
+    def interactive_file_modification(self, file_path: str, instructions: str, auto_confirm: bool = False) -> bool:
+        """Interactively modify a file with AI assistance."""
+        try:
+            if not Path(file_path).exists():
+                print(f"❌ File not found: {file_path}")
+                return False
+                
+            # Use existing smart diff functionality
+            result = self.modify_file_with_diff(file_path, instructions, auto_apply=auto_confirm)
+            result_data = json.loads(result)
+            
+            if result_data["status"] == "success":
+                print(f"✅ File {file_path} modified successfully")
+                if result_data.get("backup_created"):
+                    print(f"📋 Backup created: {result_data['backup_created']}")
+                return True
+            elif result_data["status"] == "ready_to_apply" and not auto_confirm:
+                # Show preview and ask for confirmation
+                print(f"\n📝 Proposed changes for {file_path}:")
+                print(result_data.get("preview", "No preview available"))
+                
+                confirmation = input("\n🤔 Apply these changes? (yes/no): ").strip().lower()
+                if confirmation in ["yes", "y"]:
+                    apply_result = self.apply_code_diff(file_path, result_data["diff"])
+                    apply_data = json.loads(apply_result)
+                    if apply_data["status"] == "success":
+                        print(f"✅ Changes applied to {file_path}")
+                        return True
+                    else:
+                        print(f"❌ Failed to apply changes: {apply_data.get('message', 'Unknown error')}")
+                        return False
+                else:
+                    print("❌ Changes cancelled")
+                    return False
+            else:
+                print(f"❌ {result_data.get('message', 'Unknown error')}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error modifying file {file_path}: {e}")
+            return False
+
+    def create_file(self, file_path: str, content: str) -> bool:
+        """Create a new file with specified content."""
+        try:
+            path = Path(file_path)
+            if path.exists():
+                print(f"❌ File {file_path} already exists")
+                return False
+                
+            # Create parent directories if they don't exist
+            path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content)
+                
+            print(f"✅ File created: {file_path}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error creating file {file_path}: {e}")
+            return False
+
+    def parse_ai_file_commands(self, ai_response: str) -> List[Dict[str, str]]:
+        """Parse AI response for file operation commands including multiple EXECUTE_COMMAND entries."""
+        commands = []
+        lines = ai_response.split('\n')
+        
+        # Parse multiple EXECUTE_COMMAND entries
+        for line in lines:
+            line = line.strip()
+            if line.startswith('EXECUTE_COMMAND:'):
+                command = line.replace('EXECUTE_COMMAND:', '').strip()
+                if command:  # Only add non-empty commands
+                    commands.append({
+                        'operation': 'execute',
+                        'command': command,
+                        'file_path': ''  # Not applicable for shell commands
+                    })
+            elif 'read file' in line.lower() or 'show file' in line.lower():
+                # Try to extract file name
+                words = line.split()
+                for word in words:
+                    if any(ext in word for ext in ['.py', '.js', '.ts', '.java']):
+                        commands.append({
+                            'operation': 'read',
+                            'file_path': word.strip('.,!?()[]{}":;'),
+                            'command': ''
+                        })
+                        break
+        
+        # Also check for multi-line command blocks (for future enhancement)
+        command_block_pattern = r'```bash\n(.*?)\n```'
+        import re
+        bash_blocks = re.findall(command_block_pattern, ai_response, re.DOTALL)
+        for block in bash_blocks:
+            block_lines = block.strip().split('\n')
+            for cmd_line in block_lines:
+                cmd_line = cmd_line.strip()
+                if cmd_line and not cmd_line.startswith('#'):  # Skip empty lines and comments
+                    commands.append({
+                        'operation': 'execute',
+                        'command': cmd_line,
+                        'file_path': ''
+                    })
+                        
+        return commands
 
 
 # Create a global instance for easy access
