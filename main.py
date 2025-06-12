@@ -22,11 +22,8 @@ import sys
 import os
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-import time
 import readline  # For better input handling
 from datetime import datetime
-import difflib
-import re
 
 # Add the project root to the Python path
 project_root = Path(__file__).parent
@@ -35,9 +32,11 @@ sys.path.insert(0, str(project_root))
 from utils.code_parser import CodeParser, CodeAnalysisResult
 from graph.style_graph import SymbioteStyleGraph
 from agents.style_learner import StyleLearnerAgent
+from utils.tools import SymbioteTools, create_symbiote_tools
+from utils.tool_executor import AutonomousToolExecutor, create_autonomous_tool_executor
+from utils.context_manager import SmartContextManager, create_smart_context_manager
 from dotenv import load_dotenv
 import json
-import asyncio
 
 # Load environment variables
 load_dotenv()
@@ -61,6 +60,29 @@ class SymbioteCore:
 
         self.cache_enabled = (
             os.getenv("SYMBIOTE_CACHE_ENABLED", "true").lower() == "true"
+        )
+
+        # Initialize workspace path
+        self.workspace_path = Path.cwd()
+
+        # Initialize tools system
+        self.tools = create_symbiote_tools(
+            gemini_api_key=self.gemini_api_key,
+            debug=debug,
+            workspace_path=self.workspace_path
+        )
+
+        # Initialize autonomous tool executor
+        self.tool_executor = create_autonomous_tool_executor(
+            tools=self.tools,
+            debug=debug,
+            workspace_path=self.workspace_path
+        )
+
+        # Initialize smart context manager
+        self.context_manager = create_smart_context_manager(
+            workspace_path=self.workspace_path,
+            debug=debug
         )
 
         # Initialize code parser with API key
@@ -95,6 +117,9 @@ class SymbioteCore:
             print(f"😤 Sass level: {self.sass_level}/10")
             print(f"🗄️  Cache enabled: {self.cache_enabled}")
             print(f"🚀 Advanced mode: {self.advanced_mode}")
+            print(f"🛠️  Tools available: {len(self.tools.tools)}")
+            print(f"🤖 Tool executor ready: {self.tool_executor is not None}")
+            print(f"🧠 Context manager ready: {self.context_manager is not None}")
 
     def learn_mode(
         self, codebase_path: str, output_file: Optional[str] = None
@@ -396,19 +421,13 @@ Provide only the code with brief explanations, no extra formatting.
             print(f"⚠️ Workspace analysis failed: {e}")
             context = {"error": str(e)}
 
-        # Initialize chat session
-        from utils.tools import create_symbiote_tools
-
-        tools_system = create_symbiote_tools(
-            gemini_api_key=self.gemini_api_key,
-            debug=self.debug,
-            workspace_path=workspace_path_obj,
-        )
-
+        # Initialize chat session - use existing tools from SymbioteCore
         chat_session = SymbioteChatSession(
             workspace_path=workspace_path_obj,
             workspace_context=context,
-            tools=tools_system,
+            tools=self.tools,
+            tool_executor=self.tool_executor,
+            context_manager=self.context_manager,
             gemini_api_key=self.gemini_api_key,
             debug=self.debug,
             sass_level=self.sass_level,
@@ -588,6 +607,8 @@ class SymbioteChatSession:
         workspace_path: Path,
         workspace_context: Dict[str, Any],
         tools=None,
+        tool_executor=None,
+        context_manager=None,
         gemini_api_key: Optional[str] = None,
         debug: bool = False,
         sass_level: int = 5,
@@ -595,6 +616,8 @@ class SymbioteChatSession:
         self.workspace_path = workspace_path
         self.workspace_context = workspace_context
         self.tools = tools  # This will be a SymbioteTools instance
+        self.tool_executor = tool_executor  # This will be an AutonomousToolExecutor instance
+        self.context_manager = context_manager  # This will be a SmartContextManager instance
         self.gemini_api_key = gemini_api_key
         self.debug = debug
         self.sass_level = sass_level
@@ -712,7 +735,31 @@ Be specific about file operations and always show what you're going to change.""
 
             if response and response.text:
                 ai_response = response.text
-                print(ai_response)
+                
+                # Use autonomous tool executor to process the AI response
+                if self.tool_executor:
+                    enhanced_response, tool_results = self.tool_executor.process_llm_response(ai_response)
+                    
+                    if tool_results:
+                        # Tools were executed - show the enhanced response with results
+                        print(enhanced_response)
+                        
+                        # Track successful tool executions if context manager is available
+                        if self.context_manager:
+                            tools_used = [r.tool_call.tool_name for r in tool_results if r.success]
+                            self.context_manager.track_interaction(
+                                query=user_input,
+                                intent=self.context_manager.infer_user_intent(user_input) if hasattr(self.context_manager, 'infer_user_intent') else 'analysis',
+                                files_accessed=[],  # Could be enhanced to track actual files
+                                tools_used=tools_used,
+                                success=any(r.success for r in tool_results)
+                            )
+                    else:
+                        # No tools executed - show original response
+                        print(ai_response)
+                else:
+                    # Fallback - no tool executor available
+                    print(ai_response)
 
                 # Add AI response to conversation history
                 self.conversation_history.append(
@@ -720,16 +767,7 @@ Be specific about file operations and always show what you're going to change.""
                 )
 
                 # Check if AI wants to execute tools or file operations
-                if any(
-                    keyword in ai_response.lower()
-                    for keyword in [
-                        "let me check",
-                        "read file",
-                        "show me",
-                        "examine",
-                        "analyze",
-                    ]
-                ):
+                if self._should_auto_execute_tools(user_input, ai_response):
                     self._handle_enhanced_tool_execution(user_input, ai_response)
 
                 # Check for terminal command execution requests
@@ -750,6 +788,54 @@ Be specific about file operations and always show what you're going to change.""
                 import traceback
 
                 traceback.print_exc()
+
+    def _should_auto_execute_tools(self, user_query: str, ai_response: str) -> bool:
+        """Determine if tools should be auto-executed based on user query and AI response patterns."""
+        user_lower = user_query.lower()
+        ai_lower = ai_response.lower()
+        
+        # Auto-execute for common analysis patterns in user query
+        analysis_patterns = [
+            "what does this code do",
+            "how does this work", 
+            "explain this code",
+            "analyze this",
+            "debug this",
+            "fix this",
+            "improve this",
+            "optimize this",
+            "show me the code",
+            "check the code",
+            "look at the file",
+            "examine the file",
+            "read the file",
+        ]
+        
+        # Auto-execute if AI mentions it will examine/check/read files
+        ai_action_patterns = [
+            "let me check",
+            "let me read", 
+            "let me examine",
+            "i'll read",
+            "i'll check",
+            "i'll examine",
+            "i need to read",
+            "i need to check", 
+            "i should read",
+            "i should check",
+            "let me look at",
+            "i'll look at",
+            "let me see",
+            "i'll investigate",
+            "let me analyze",
+            "i should examine",
+            "i'll take a look",
+        ]
+        
+        return (
+            any(pattern in user_lower for pattern in analysis_patterns) or
+            any(pattern in ai_lower for pattern in ai_action_patterns)
+        )
 
     def _handle_direct_file_operations(self, user_input: str) -> bool:
         """Handle direct file operation commands from user."""

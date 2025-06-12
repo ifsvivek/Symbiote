@@ -13,6 +13,7 @@ Key Features:
 - Code quality assessment tools
 - Terminal command execution capabilities
 - Interactive file operations
+- Enhanced autonomous tool execution
 
 Author: Vivek Sharma
 License: MIT
@@ -20,6 +21,9 @@ License: MIT
 
 import os
 import ast
+import json
+import subprocess
+import os
 import json
 import subprocess
 import shlex
@@ -30,6 +34,7 @@ from pathlib import Path
 from dataclasses import asdict
 from collections import Counter, defaultdict
 from datetime import datetime
+import inspect
 
 from langchain_core.tools import Tool
 from google import genai
@@ -61,6 +66,13 @@ class SymbioteTools:
         self.gemini_client = None
         self.workspace_path = workspace_path or Path.cwd()
 
+        # Virtual environment detection and setup
+        self.venv_path = self._detect_virtual_environment()
+        self.venv_activated = False
+
+        if self.debug and self.venv_path:
+            print(f"🐍 Virtual environment detected: {self.venv_path}")
+
         # Initialize Gemini client if available
         if gemini_api_key:
             try:
@@ -73,6 +85,59 @@ class SymbioteTools:
 
         # Initialize all tools
         self.tools = self._create_tools()
+
+    def _detect_virtual_environment(self) -> Optional[Path]:
+        """Detect virtual environment in the workspace."""
+        # Common virtual environment directory names
+        venv_names = [".venv", "venv", "env", ".env"]
+
+        for venv_name in venv_names:
+            venv_path = self.workspace_path / venv_name
+            if venv_path.exists() and venv_path.is_dir():
+                # Check if it's a valid Python virtual environment
+                if (venv_path / "bin" / "python").exists() or (
+                    venv_path / "Scripts" / "python.exe"
+                ).exists():
+                    return venv_path
+
+        # Check if we're already in a virtual environment
+        if os.environ.get("VIRTUAL_ENV"):
+            return Path(os.environ["VIRTUAL_ENV"])
+
+        return None
+
+    def _get_venv_activation_command(self) -> Optional[str]:
+        """Get the command to activate the virtual environment."""
+        if not self.venv_path:
+            return None
+
+        # Unix/Linux/macOS
+        if (self.venv_path / "bin" / "activate").exists():
+            return f"source {self.venv_path / 'bin' / 'activate'}"
+
+        # Windows
+        if (self.venv_path / "Scripts" / "activate.bat").exists():
+            return f"{self.venv_path / 'Scripts' / 'activate.bat'}"
+
+        return None
+
+    def _prepare_command_with_venv(self, command: str) -> str:
+        """Prepare command with virtual environment activation if available."""
+        if not self.venv_path:
+            return command
+
+        activation_cmd = self._get_venv_activation_command()
+        if not activation_cmd:
+            return command
+
+        # For commands that should use the virtual environment
+        python_commands = ["python", "pip", "pytest", "black", "flake8", "mypy"]
+        command_parts = command.split()
+
+        if command_parts and any(cmd in command_parts[0] for cmd in python_commands):
+            return f"{activation_cmd} && {command}"
+
+        return command
 
     def _create_tools(self) -> List[Tool]:
         """Create and return all available tools."""
@@ -119,11 +184,16 @@ class SymbioteTools:
                 description="Compare code against industry best practices",
                 func=self.compare_with_best_practices,
             ),
-            # File System Tools
+            # Enhanced File System Tools
             Tool(
                 name="read_file_content",
                 description="Read and analyze the content of a specific file",
                 func=self.read_file_content,
+            ),
+            Tool(
+                name="read_file_with_lines",
+                description="Read file content with line numbers for better analysis",
+                func=self.read_file_with_lines,
             ),
             Tool(
                 name="list_directory_files",
@@ -134,6 +204,11 @@ class SymbioteTools:
                 name="get_file_metadata",
                 description="Get metadata information about a file",
                 func=self.get_file_metadata,
+            ),
+            Tool(
+                name="search_in_files",
+                description="Search for patterns or text within files",
+                func=self.search_in_files,
             ),
             # Git and Version Control Tools
             Tool(
@@ -187,6 +262,32 @@ class SymbioteTools:
                 name="update_style_preferences",
                 description="Update learned style preferences based on new evidence",
                 func=self.update_style_preferences,
+            ),
+            # Diff-Based Tools
+            Tool(
+                name="generate_code_diff",
+                description="Generate a unified diff between original and modified code",
+                func=self.generate_code_diff,
+            ),
+            Tool(
+                name="apply_code_diff",
+                description="Apply a unified diff to modify a file",
+                func=self.apply_code_diff,
+            ),
+            Tool(
+                name="create_smart_diff",
+                description="Create intelligent diff that preserves context and applies changes safely",
+                func=self.create_smart_diff,
+            ),
+            Tool(
+                name="preview_diff_changes",
+                description="Preview what changes a diff would make to a file",
+                func=self.preview_diff_changes,
+            ),
+            Tool(
+                name="modify_file_with_diff",
+                description="Modify a file using AI-generated diff instructions",
+                func=self.modify_file_with_diff,
             ),
         ]
 
@@ -712,6 +813,30 @@ class SymbioteTools:
         except Exception as e:
             return json.dumps({"error": f"Error reading file: {str(e)}"})
 
+    def read_file_with_lines(self, file_path: str) -> str:
+        """Read file content with line numbers for better analysis."""
+        try:
+            path = Path(file_path)
+            if not path.exists():
+                return json.dumps({"error": f"File not found: {file_path}"})
+
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+
+            file_info = {
+                "path": str(path),
+                "total_lines": len(lines),
+                "content_with_lines": [
+                    {"line_number": i + 1, "content": line.strip()}
+                    for i, line in enumerate(lines)
+                ],
+            }
+
+            return json.dumps(file_info, indent=2)
+
+        except Exception as e:
+            return json.dumps({"error": f"Error reading file with lines: {str(e)}"})
+
     def list_directory_files(self, directory_path: str, pattern: str = "*") -> str:
         """List files in a directory with filtering options."""
         try:
@@ -763,6 +888,35 @@ class SymbioteTools:
 
         except Exception as e:
             return json.dumps({"error": f"Error getting file metadata: {str(e)}"})
+
+    def search_in_files(self, directory_path: str, search_pattern: str) -> str:
+        """Search for patterns or text within files."""
+        try:
+            path = Path(directory_path)
+            if not path.exists():
+                return json.dumps({"error": f"Directory not found: {directory_path}"})
+
+            matching_files = []
+            for file in path.glob("**/*.py"):
+                try:
+                    with open(file, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                        if re.search(search_pattern, content):
+                            matching_files.append(str(file))
+                except Exception:
+                    continue
+
+            search_results = {
+                "directory": str(path),
+                "search_pattern": search_pattern,
+                "matching_files": matching_files,
+                "total_matches": len(matching_files),
+            }
+
+            return json.dumps(search_results, indent=2)
+
+        except Exception as e:
+            return json.dumps({"error": f"Error searching in files: {str(e)}"})
 
     # Git Tools Implementation
 
@@ -1285,77 +1439,416 @@ class SymbioteTools:
         except Exception as e:
             return f"Error assessing test coverage: {str(e)}"
 
-    # Helper Methods
+    # Diff-based File Modification Tools
+
+    def generate_code_diff(self, original_content: str, modified_content: str, file_path: str = "file") -> str:
+        """Generate a unified diff between original and modified code."""
+        try:
+            # Split content into lines for difflib
+            original_lines = original_content.splitlines(keepends=True)
+            modified_lines = modified_content.splitlines(keepends=True)
+            
+            # Generate unified diff
+            diff = difflib.unified_diff(
+                original_lines,
+                modified_lines,
+                fromfile=f"a/{file_path}",
+                tofile=f"b/{file_path}",
+                lineterm=""
+            )
+            
+            diff_content = ''.join(diff)
+            
+            if not diff_content:
+                return json.dumps({
+                    "status": "no_changes",
+                    "message": "No differences found between original and modified content",
+                    "diff": ""
+                })
+            
+            return json.dumps({
+                "status": "success",
+                "message": "Diff generated successfully",
+                "diff": diff_content,
+                "stats": self._get_diff_stats(diff_content)
+            })
+            
+        except Exception as e:
+            return json.dumps({
+                "status": "error",
+                "message": f"Error generating diff: {str(e)}"
+            })
+
+    def apply_code_diff(self, file_path: str, diff_content: str, backup: bool = True) -> str:
+        """Apply a unified diff to modify a file."""
+        try:
+            path = Path(file_path)
+            if not path.exists():
+                return json.dumps({
+                    "status": "error",
+                    "message": f"File {file_path} does not exist"
+                })
+            
+            # Read original content
+            with open(path, 'r', encoding='utf-8') as f:
+                original_content = f.read()
+            
+            # Create backup if requested
+            backup_path = None
+            if backup:
+                backup_path = path.with_suffix(path.suffix + f'.backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
+                with open(backup_path, 'w', encoding='utf-8') as f:
+                    f.write(original_content)
+            
+            # Apply the diff
+            result = self._apply_diff_to_content(original_content, diff_content)
+            
+            if result["status"] == "success":
+                # Write the modified content
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(result["modified_content"])
+                
+                return json.dumps({
+                    "status": "success",
+                    "message": f"Diff applied successfully to {file_path}",
+                    "backup_created": backup_path.name if backup_path else None,
+                    "changes_applied": result["changes_applied"]
+                })
+            else:
+                return json.dumps(result)
+                
+        except Exception as e:
+            return json.dumps({
+                "status": "error",
+                "message": f"Error applying diff: {str(e)}"
+            })
+
+    def create_smart_diff(self, file_path: str, instructions: str) -> str:
+        """Create intelligent diff that preserves context and applies changes safely."""
+        try:
+            path = Path(file_path)
+            if not path.exists():
+                return json.dumps({
+                    "status": "error",
+                    "message": f"File {file_path} does not exist"
+                })
+            
+            # Read current content
+            with open(path, 'r', encoding='utf-8') as f:
+                current_content = f.read()
+            
+            if not self.gemini_client:
+                return json.dumps({
+                    "status": "error",
+                    "message": "AI client not available for smart diff generation"
+                })
+            
+            # Use AI to generate the modified content
+            prompt = f"""
+            You are a code modification assistant. Given the current file content and instructions, 
+            generate the modified version that implements the requested changes while preserving 
+            the existing structure and style.
+
+            Current file content:
+            ```
+            {current_content}
+            ```
+
+            Instructions: {instructions}
+
+            Rules:
+            1. Make minimal changes to implement the instructions
+            2. Preserve existing code style and formatting
+            3. Keep all existing functionality intact
+            4. Add comments where appropriate
+            5. Return ONLY the modified file content, no explanations
+
+            Modified content:
+            """
+
+            response = self.gemini_client.models.generate_content(
+                model="gemini-2.5-flash-preview-05-20",
+                contents=prompt
+            )
+
+            if response and response.text:
+                modified_content = response.text.strip()
+                
+                # Generate diff
+                diff_result = self.generate_code_diff(current_content, modified_content, file_path)
+                diff_data = json.loads(diff_result)
+                
+                if diff_data["status"] == "success":
+                    return json.dumps({
+                        "status": "success",
+                        "message": "Smart diff created successfully",
+                        "diff": diff_data["diff"],
+                        "stats": diff_data["stats"],
+                        "preview": self._create_diff_preview(current_content, modified_content)
+                    })
+                else:
+                    return diff_result
+            else:
+                return json.dumps({
+                    "status": "error",
+                    "message": "AI failed to generate modified content"
+                })
+                
+        except Exception as e:
+            return json.dumps({
+                "status": "error",
+                "message": f"Error creating smart diff: {str(e)}"
+            })
+
+    def preview_diff_changes(self, file_path: str, diff_content: str) -> str:
+        """Preview what changes a diff would make to a file."""
+        try:
+            path = Path(file_path)
+            if not path.exists():
+                return json.dumps({
+                    "status": "error",
+                    "message": f"File {file_path} does not exist"
+                })
+            
+            # Read original content
+            with open(path, 'r', encoding='utf-8') as f:
+                original_content = f.read()
+            
+            # Apply diff to get preview
+            result = self._apply_diff_to_content(original_content, diff_content)
+            
+            if result["status"] == "success":
+                return json.dumps({
+                    "status": "success",
+                    "message": "Preview generated successfully",
+                    "preview": self._create_diff_preview(original_content, result["modified_content"]),
+                    "changes_summary": result["changes_applied"],
+                    "modified_content": result["modified_content"]
+                })
+            else:
+                return json.dumps(result)
+                
+        except Exception as e:
+            return json.dumps({
+                "status": "error",
+                "message": f"Error previewing diff: {str(e)}"
+            })
+
+    def modify_file_with_diff(self, file_path: str, modification_instructions: str, auto_apply: bool = False) -> str:
+        """Modify a file using AI-generated diff instructions."""
+        try:
+            # Generate smart diff
+            diff_result = self.create_smart_diff(file_path, modification_instructions)
+            diff_data = json.loads(diff_result)
+            
+            if diff_data["status"] != "success":
+                return diff_result
+            
+            if auto_apply:
+                # Apply the diff automatically
+                apply_result = self.apply_code_diff(file_path, diff_data["diff"])
+                apply_data = json.loads(apply_result)
+                
+                if apply_data["status"] == "success":
+                    return json.dumps({
+                        "status": "success",
+                        "message": f"File {file_path} modified successfully",
+                        "diff": diff_data["diff"],
+                        "preview": diff_data["preview"],
+                        "applied": True,
+                        "backup_created": apply_data.get("backup_created")
+                    })
+                else:
+                    return apply_result
+            else:
+                # Return diff for manual review
+                return json.dumps({
+                    "status": "ready_to_apply",
+                    "message": f"Diff ready for {file_path}. Review and apply manually.",
+                    "diff": diff_data["diff"],
+                    "preview": diff_data["preview"],
+                    "applied": False,
+                    "instructions": "Use apply_code_diff() to apply these changes"
+                })
+                
+        except Exception as e:
+            return json.dumps({
+                "status": "error",
+                "message": f"Error modifying file with diff: {str(e)}"
+            })
+
+    # Helper methods for diff operations
+
+    def _apply_diff_to_content(self, original_content: str, diff_content: str) -> Dict[str, Any]:
+        """Apply a unified diff to content and return the result."""
+        try:
+            original_lines = original_content.splitlines(keepends=True)
+            
+            # Parse the diff
+            diff_lines = diff_content.splitlines()
+            
+            # Apply the patch
+            patched_lines = list(original_lines)
+            changes_applied = []
+            
+            i = 0
+            line_offset = 0
+            
+            while i < len(diff_lines):
+                line = diff_lines[i]
+                
+                # Look for hunk headers (@@)
+                if line.startswith('@@'):
+                    # Parse hunk header: @@ -start,count +start,count @@
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        old_info = parts[1][1:]  # Remove the '-'
+                        new_info = parts[2][1:]  # Remove the '+'
+                        
+                        old_start = int(old_info.split(',')[0]) - 1  # Convert to 0-based
+                        old_start += line_offset
+                        
+                        # Process the hunk
+                        i += 1
+                        hunk_changes = []
+                        
+                        while i < len(diff_lines) and not diff_lines[i].startswith('@@'):
+                            hunk_line = diff_lines[i]
+                            
+                            if hunk_line.startswith('-'):
+                                # Line to remove
+                                removed_content = hunk_line[1:]
+                                hunk_changes.append(('remove', removed_content))
+                            elif hunk_line.startswith('+'):
+                                # Line to add
+                                added_content = hunk_line[1:] + '\n'
+                                hunk_changes.append(('add', added_content))
+                            elif hunk_line.startswith(' '):
+                                # Context line (unchanged)
+                                hunk_changes.append(('context', hunk_line[1:]))
+                            
+                            i += 1
+                        
+                        # Apply hunk changes
+                        self._apply_hunk_changes(patched_lines, old_start, hunk_changes, changes_applied)
+                        
+                        continue
+                
+                i += 1
+            
+            modified_content = ''.join(patched_lines)
+            
+            return {
+                "status": "success",
+                "modified_content": modified_content,
+                "changes_applied": changes_applied
+            }
+            
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Error applying diff: {str(e)}"
+            }
+
+    def _apply_hunk_changes(self, lines: List[str], start_line: int, changes: List[Tuple[str, str]], changes_applied: List[str]):
+        """Apply changes from a hunk to the lines list."""
+        current_line = start_line
+        
+        for change_type, content in changes:
+            if change_type == 'remove':
+                if current_line < len(lines):
+                    removed_line = lines.pop(current_line)
+                    changes_applied.append(f"Removed line {current_line + 1}: {removed_line.strip()}")
+            elif change_type == 'add':
+                lines.insert(current_line, content)
+                changes_applied.append(f"Added line {current_line + 1}: {content.strip()}")
+                current_line += 1
+            elif change_type == 'context':
+                current_line += 1
+
+    def _get_diff_stats(self, diff_content: str) -> Dict[str, int]:
+        """Get statistics about a diff."""
+        lines = diff_content.splitlines()
+        stats = {
+            "additions": 0,
+            "deletions": 0,
+            "hunks": 0
+        }
+        
+        for line in lines:
+            if line.startswith('@@'):
+                stats["hunks"] += 1
+            elif line.startswith('+') and not line.startswith('+++'):
+                stats["additions"] += 1
+            elif line.startswith('-') and not line.startswith('---'):
+                stats["deletions"] += 1
+        
+        return stats
+
+    def _create_diff_preview(self, original: str, modified: str) -> str:
+        """Create a human-readable preview of changes."""
+        original_lines = original.splitlines()
+        modified_lines = modified.splitlines()
+        
+        # Use difflib to create a nice side-by-side comparison
+        diff = difflib.unified_diff(
+            original_lines,
+            modified_lines,
+            fromfile="Original",
+            tofile="Modified",
+            lineterm=""
+        )
+        
+        preview_lines = []
+        for line in diff:
+            if line.startswith('+++') or line.startswith('---'):
+                continue
+            elif line.startswith('@@'):
+                preview_lines.append(f"\n{line}")
+            elif line.startswith('+'):
+                preview_lines.append(f"+ {line[1:]}")
+            elif line.startswith('-'):
+                preview_lines.append(f"- {line[1:]}")
+            else:
+                preview_lines.append(f"  {line[1:] if line else ''}")
+        
+        return '\n'.join(preview_lines)
 
     def _analyze_naming_pattern(self, names: List[str]) -> Dict[str, float]:
         """Analyze naming patterns in a list of names."""
+        if not names:
+            return {}
+        
         patterns = {
             "snake_case": 0,
             "camelCase": 0,
             "PascalCase": 0,
-            "CONSTANT_CASE": 0,
+            "UPPER_CASE": 0
         }
-
+        
         for name in names:
             if not name:
                 continue
-
-            if "_" in name and name.islower():
+                
+            if '_' in name and name.islower():
                 patterns["snake_case"] += 1
-            elif (
-                name[0].islower()
-                and any(c.isupper() for c in name[1:])
-                and "_" not in name
-            ):
-                patterns["camelCase"] += 1
-            elif name[0].isupper() and not "_" in name:
+            elif '_' in name and name.isupper():
+                patterns["UPPER_CASE"] += 1
+            elif name[0].isupper() and any(c.isupper() for c in name[1:]):
                 patterns["PascalCase"] += 1
-            elif "_" in name and name.isupper():
-                patterns["CONSTANT_CASE"] += 1
-
-        total = sum(patterns.values())
-        if total > 0:
-            return {pattern: count / total for pattern, count in patterns.items()}
-        return {pattern: 0.0 for pattern in patterns}
-
-    def _score_to_grade(self, score: float) -> str:
-        """Convert a score to a letter grade."""
-        if score >= 0.9:
-            return "A"
-        elif score >= 0.8:
-            return "B"
-        elif score >= 0.7:
-            return "C"
-        elif score >= 0.6:
-            return "D"
-        else:
-            return "F"
-
-    def _get_maintainability_recommendations(
-        self, scores: Dict[str, float]
-    ) -> List[str]:
-        """Get recommendations based on maintainability scores."""
-        recommendations = []
-
-        if scores["complexity_score"] < 0.7:
-            recommendations.append("Reduce function complexity through refactoring")
-
-        if scores["documentation_score"] < 0.7:
-            recommendations.append("Improve documentation coverage")
-
-        if scores["naming_score"] < 0.8:
-            recommendations.append("Standardize naming conventions")
-
-        if scores["organization_score"] < 0.7:
-            recommendations.append("Break down large functions into smaller units")
-
-        return recommendations
+            elif name[0].islower() and any(c.isupper() for c in name[1:]):
+                patterns["camelCase"] += 1
+        
+        # Convert to percentages
+        total = len(names)
+        return {pattern: count / total for pattern, count in patterns.items() if count > 0}
 
     # Terminal Command Execution Methods
 
     def execute_terminal_command(self, command: str) -> tuple[bool, str]:
         """
         Execute a terminal command safely and return the result.
+        Automatically activates virtual environment for Python-related commands.
 
         Args:
             command: The shell command to execute
@@ -1364,10 +1857,42 @@ class SymbioteTools:
             Tuple of (success: bool, output: str)
         """
         try:
-            if self.debug:
-                print(f"🔧 Executing terminal command: {command}")
+            # Prepare command with virtual environment activation if needed
+            prepared_command = self._prepare_command_with_venv(command)
 
-            # Parse command safely using shlex
+            if self.debug:
+                if prepared_command != command:
+                    print(f"🔧 Executing with venv: {prepared_command}")
+                else:
+                    print(f"🔧 Executing terminal command: {command}")
+
+            # For commands with shell operators (&&, |, etc.), use shell=True
+            use_shell = any(
+                op in prepared_command for op in ["&&", "||", "|", ">", "<", ";"]
+            )
+
+            if use_shell:
+                # Execute with shell for complex commands
+                result = subprocess.run(
+                    prepared_command,
+                    shell=True,
+                    cwd=self.workspace_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+            else:
+                # Parse command safely using shlex for simple commands
+                parsed_command = shlex.split(prepared_command)
+                result = subprocess.run(
+                    parsed_command,
+                    cwd=self.workspace_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
             parsed_command = shlex.split(command)
 
             # Execute the command
@@ -1413,504 +1938,84 @@ class SymbioteTools:
         except Exception as e:
             return False, f"❌ Error executing command: {e}"
 
-    def handle_terminal_commands(self, ai_response: str) -> None:
-        """Handle terminal command execution requests from AI responses."""
-        # Look for EXECUTE_COMMAND: pattern in AI response
-        command_pattern = r"EXECUTE_COMMAND:\s*(.+?)(?:\n|$)"
-        matches = re.findall(command_pattern, ai_response, re.IGNORECASE | re.MULTILINE)
+    def execute_dynamic_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+        """
+        Dynamically execute a tool by its name with the given arguments.
 
-        for command in matches:
-            command = command.strip()
-            if command:
-                success, output = self.execute_terminal_command(command)
+        Args:
+            tool_name: The name of the tool to execute.
+            arguments: A dictionary of arguments for the tool.
 
-                # Display the result
-                if success:
-                    print(f"\n✅ Command output:\n{output}")
-                else:
-                    print(f"\n❌ Command failed:\n{output}")
+        Returns:
+            A string representation of the tool's execution result.
+        """
+        if self.debug:
+            print(f"🛠️ Attempting to execute tool: {tool_name} with args: {arguments}")
 
-    # File Operation Methods
-
-    def file_exists(self, file_path: str) -> bool:
-        """Check if file exists in workspace."""
-        try:
-            full_path = self.workspace_path / file_path
-            return full_path.exists()
-        except:
-            return False
-
-    def create_file(self, file_path: str, content: str) -> bool:
-        """Create a new file with given content."""
-        try:
-            full_path = self.workspace_path / file_path
-
-            # Create parent directories if needed
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-
-            with open(full_path, "w", encoding="utf-8") as f:
-                f.write(content)
-
-            print(f"✅ Created {file_path}")
-            return True
-        except Exception as e:
-            print(f"❌ Error creating file: {e}")
-            return False
-
-    def handle_file_creation(self, file_path: str, user_request: str) -> bool:
-        """Handle creation of a new file."""
-        try:
-            full_path = self.workspace_path / file_path
-
-            if full_path.exists():
-                print(f"❌ File {file_path} already exists!")
-                return False
-
-            # Use AI to generate file content
-            if self.gemini_client:
-                creation_prompt = f"""
-Create a new file based on this request: {user_request}
-
-File path: {file_path}
-
-Generate appropriate content for this file based on its name and the user's request.
-Return ONLY the file content without any explanations or markdown formatting.
-"""
-
-                response = self.gemini_client.models.generate_content(
-                    model="gemini-2.5-flash-preview-05-20", contents=creation_prompt
-                )
-
-                if response and response.text:
-                    content = response.text.strip()
-
-                    print(f"\n📝 Generated content for {file_path}:")
-                    print("=" * 50)
-                    print(content[:500] + ("..." if len(content) > 500 else ""))
-                    print("=" * 50)
-
-                    confirmation = (
-                        input(f"\n🤔 Create {file_path} with this content? (yes/no): ")
-                        .strip()
-                        .lower()
-                    )
-
-                    if confirmation in ["yes", "y"]:
-                        return self.create_file(file_path, content)
-                    else:
-                        print("❌ File creation cancelled")
-                        return False
-
-            print("❌ AI file generation requires Gemini API key")
-            return False
-
-        except Exception as e:
-            print(f"❌ Error creating file: {e}")
-            return False
-
-    def read_file_with_lines(
-        self, file_path: str, start_line: int = 1, end_line: Optional[int] = None
-    ) -> str:
-        """Read file content with line numbers for easy reference."""
-        try:
-            full_path = self.workspace_path / file_path
-            if not full_path.exists():
-                return f"❌ File not found: {file_path}"
-
-            with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
-
-            if end_line is None:
-                end_line = len(lines)
-
-            # Adjust for 1-based indexing
-            start_idx = max(0, start_line - 1)
-            end_idx = min(len(lines), end_line)
-
-            output = [f"📄 {file_path} (lines {start_line}-{end_idx}):", ""]
-
-            for i, line in enumerate(lines[start_idx:end_idx], start=start_line):
-                output.append(f"{i:4d} | {line.rstrip()}")
-
-            return "\n".join(output)
-
-        except Exception as e:
-            return f"❌ Error reading file: {e}"
-
-    def show_file_diff(
-        self, file_path: str, original_content: str, new_content: str
-    ) -> str:
-        """Generate and display a unified diff between original and new content."""
-        try:
-            original_lines = original_content.splitlines(keepends=True)
-            new_lines = new_content.splitlines(keepends=True)
-
-            diff = list(
-                difflib.unified_diff(
-                    original_lines,
-                    new_lines,
-                    fromfile=f"a/{file_path}",
-                    tofile=f"b/{file_path}",
-                    lineterm="",
-                )
-            )
-
-            if not diff:
-                return "📝 No changes detected."
-
-            output = [f"🔄 Diff for {file_path}:", ""]
-
-            for line in diff:
-                if line.startswith("+++") or line.startswith("---"):
-                    output.append(f"📁 {line.rstrip()}")
-                elif line.startswith("@@"):
-                    output.append(f"📍 {line.rstrip()}")
-                elif line.startswith("+"):
-                    output.append(f"✅ {line.rstrip()}")
-                elif line.startswith("-"):
-                    output.append(f"❌ {line.rstrip()}")
-                else:
-                    output.append(f"   {line.rstrip()}")
-
-            return "\n".join(output)
-
-        except Exception as e:
-            return f"❌ Error generating diff: {e}"
-
-    def apply_file_changes(
-        self, file_path: str, new_content: str, backup: bool = True
-    ) -> bool:
-        """Apply changes to a file with optional backup."""
-        try:
-            full_path = self.workspace_path / file_path
-
-            # Create backup if requested
-            if backup and full_path.exists():
-                backup_path = full_path.with_suffix(full_path.suffix + ".backup")
-                with open(full_path, "r", encoding="utf-8") as src:
-                    with open(backup_path, "w", encoding="utf-8") as dst:
-                        dst.write(src.read())
-                print(f"💾 Backup created: {backup_path.name}")
-
-            # Write new content
-            with open(full_path, "w", encoding="utf-8") as f:
-                f.write(new_content)
-
-            print(f"✅ Changes applied to {file_path}")
-            return True
-
-        except Exception as e:
-            print(f"❌ Error applying changes: {e}")
-            return False
-
-    def execute_file_operation(self, operation: str, file_path: str, **kwargs) -> str:
-        """Execute file operations based on AI requests."""
-        try:
-            if operation == "read":
-                start_line = kwargs.get("start_line", 1)
-                end_line = kwargs.get("end_line", None)
-                return self.read_file_with_lines(file_path, start_line, end_line)
-
-            elif operation == "modify":
-                original_content = kwargs.get("original_content", "")
-                new_content = kwargs.get("new_content", "")
-
-                # Show diff first
-                diff_output = self.show_file_diff(
-                    file_path, original_content, new_content
-                )
-                print(diff_output)
-
-                # Ask for confirmation
-                print(f"\n🤔 Apply these changes to {file_path}?")
-                response = (
-                    input("   Type 'yes' to apply, 'no' to cancel: ").strip().lower()
-                )
-
-                if response in ["yes", "y"]:
-                    success = self.apply_file_changes(file_path, new_content)
-                    return (
-                        "✅ Changes applied successfully!"
-                        if success
-                        else "❌ Failed to apply changes"
-                    )
-                else:
-                    return "❌ Changes cancelled by user"
-
-            elif operation == "create":
-                content = kwargs.get("content", "")
-                full_path = self.workspace_path / file_path
-
-                if full_path.exists():
-                    print(f"⚠️  File {file_path} already exists!")
-                    response = input("   Overwrite? (yes/no): ").strip().lower()
-                    if response not in ["yes", "y"]:
-                        return "❌ File creation cancelled"
-
-                with open(full_path, "w", encoding="utf-8") as f:
-                    f.write(content)
-
-                return f"✅ Created file: {file_path}"
-
-            else:
-                return f"❌ Unknown operation: {operation}"
-
-        except Exception as e:
-            return f"❌ Error executing file operation: {e}"
-
-    def parse_ai_file_commands(self, ai_response: str) -> List[Dict[str, Any]]:
-        """Parse AI response for file operation commands."""
-        commands = []
-
-        # Look for file operation patterns in AI response
-        patterns = {
-            "read_file": r"(?:read|show|display)\s+(?:file\s+)?([^\s]+\.(?:py|js|ts|java|cpp|c|h|txt|md))",
-            "modify_file": r"(?:modify|change|edit|update)\s+(?:file\s+)?([^\s]+\.(?:py|js|ts|java|cpp|c|h|txt|md))",
-            "create_file": r"(?:create|make|new)\s+(?:file\s+)?([^\s]+\.(?:py|js|ts|java|cpp|c|h|txt|md))",
-        }
-
-        for operation, pattern in patterns.items():
-            matches = re.finditer(pattern, ai_response, re.IGNORECASE)
-            for match in matches:
-                file_path = match.group(1)
-                commands.append(
-                    {
-                        "operation": operation.split("_")[0],
-                        "file_path": file_path,
-                        "context": match.group(0),
-                    }
-                )
-
-        return commands
-
-    def smart_command_parser(
-        self,
-        user_input: str,
-        ai_response: str,
-        workspace_context: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
-        """Intelligently parse user requests and AI responses for file operations."""
-        operations = []
-
-        # Combine user input and AI response for better context
-        combined_text = f"{user_input} {ai_response}".lower()
-
-        # Enhanced patterns for more natural language
-        file_patterns = [
-            # Reading files
-            (
-                r"(?:show|read|display|open|view|check|examine|look at)\s+(?:the\s+)?(?:file\s+)?([a-zA-Z0-9_./]+\.(?:py|js|ts|java|cpp|c|h|txt|md|json|yaml|yml))",
-                "read",
-            ),
-            (
-                r"(?:what\'s|whats)\s+in\s+([a-zA-Z0-9_./]+\.(?:py|js|ts|java|cpp|c|h|txt|md|json|yaml|yml))",
-                "read",
-            ),
-            (
-                r"(?:content|contents)\s+of\s+([a-zA-Z0-9_./]+\.(?:py|js|ts|java|cpp|c|h|txt|md|json|yaml|yml))",
-                "read",
-            ),
-            # Modifying files
-            (
-                r"(?:fix|modify|change|edit|update|alter)\s+(?:the\s+)?(?:file\s+)?([a-zA-Z0-9_./]+\.(?:py|js|ts|java|cpp|c|h|txt|md|json|yaml|yml))",
-                "modify",
-            ),
-            (
-                r"(?:add|insert)\s+.*(?:to|in)\s+([a-zA-Z0-9_./]+\.(?:py|js|ts|java|cpp|c|h|txt|md|json|yaml|yml))",
-                "modify",
-            ),
-            (
-                r"(?:remove|delete)\s+.*(?:from)\s+([a-zA-Z0-9_./]+\.(?:py|js|ts|java|cpp|c|h|txt|md|json|yaml|yml))",
-                "modify",
-            ),
-            # Creating files
-            (
-                r"(?:create|make|generate|new)\s+(?:a\s+)?(?:file\s+)?(?:called\s+)?([a-zA-Z0-9_./]+\.(?:py|js|ts|java|cpp|c|h|txt|md|json|yaml|yml))",
-                "create",
-            ),
-        ]
-
-        # Find workspace files that might be referenced without extension
-        workspace_files = []
-        if workspace_context:
-            recent_files = workspace_context.get("recent_files", [])
-            file_structure = workspace_context.get("file_structure", [])
-            workspace_files = recent_files + [
-                f.get("name", "") for f in file_structure if f.get("type") == "file"
-            ]
-
-        # Check for file patterns
-        for pattern, operation in file_patterns:
-            matches = re.finditer(pattern, combined_text, re.IGNORECASE)
-            for match in matches:
-                file_path = match.group(1)
-                operations.append(
-                    {
-                        "operation": operation,
-                        "file_path": file_path,
-                        "context": match.group(0),
-                        "confidence": 0.8,
-                    }
-                )
-
-        # Check for references to known files without full paths
-        words = combined_text.split()
-        for word in words:
-            clean_word = word.strip('.,!?()[]{}":;')
-            for workspace_file in workspace_files:
-                if (
-                    clean_word in workspace_file.lower()
-                    or workspace_file.lower() in clean_word
-                ):
-                    # Determine operation based on context
-                    operation = "read"  # default
-                    if any(
-                        verb in combined_text
-                        for verb in ["fix", "modify", "change", "edit", "update"]
+        for tool in self.tools:
+            if tool.name == tool_name:
+                try:
+                    # Ensure the command is prepared with venv if it's a terminal command tool
+                    if (
+                        tool_name == "execute_terminal_command"
+                        and "command" in arguments
                     ):
-                        operation = "modify"
-                    elif any(
-                        verb in combined_text for verb in ["create", "make", "new"]
-                    ):
-                        operation = "create"
-
-                    operations.append(
-                        {
-                            "operation": operation,
-                            "file_path": workspace_file,
-                            "context": f"Reference to {workspace_file}",
-                            "confidence": 0.6,
-                        }
-                    )
-                    break
-
-        # Remove duplicates and sort by confidence
-        unique_operations = []
-        seen_files = set()
-        for op in sorted(operations, key=lambda x: x["confidence"], reverse=True):
-            if op["file_path"] not in seen_files:
-                unique_operations.append(op)
-                seen_files.add(op["file_path"])
-
-        return unique_operations[:3]  # Limit to top 3 operations
-
-    def execute_smart_operations(self, operations: List[Dict[str, Any]]) -> str:
-        """Execute file operations with smart handling."""
-        results = []
-
-        for op in operations:
-            operation = op["operation"]
-            file_path = op["file_path"]
-            confidence = op["confidence"]
-
-            print(
-                f"\n🔧 Detected: {operation} operation on '{file_path}' (confidence: {confidence:.1f})"
-            )
-
-            if confidence < 0.5:
-                print("   ⚠️ Low confidence, skipping...")
-                continue
-
-            if operation == "read":
-                result = self.read_file_with_lines(file_path)
-                print(result)
-                results.append(f"Read {file_path}")
-
-            elif operation == "modify":
-                print(
-                    f"   📝 To modify {file_path}, I need to know what changes you want."
-                )
-                print(
-                    f"   Please specify the exact changes or let me analyze the issue first."
-                )
-                # First read the file to understand it
-                current_content = self.read_file_with_lines(file_path)
-                print(current_content)
-                results.append(f"Prepared to modify {file_path}")
-
-            elif operation == "create":
-                print(
-                    f"   ✨ To create {file_path}, I need to know what content you want."
-                )
-                print(f"   Please specify the type of file and its purpose.")
-                results.append(f"Prepared to create {file_path}")
-
-        return " | ".join(results) if results else "No operations executed"
-
-    def interactive_file_modification(
-        self, file_path: str, modification_request: str, auto_confirm: bool = False
-    ) -> bool:
-        """Handle interactive file modification with AI assistance."""
-        try:
-            full_path = self.workspace_path / file_path
-            if not full_path.exists():
-                print(f"❌ File not found: {file_path}")
-                return False
-
-            # Read current content
-            with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
-                current_content = f.read()
-
-            print(f"📄 Current content of {file_path}:")
-            print(self.read_file_with_lines(file_path))
-
-            # Use AI to generate the modification
-            if self.gemini_client:
-                modification_prompt = f"""
-You are helping modify a file. Here's the current content:
-
-```
-{current_content}
-```
-
-User's modification request: {modification_request}
-
-Please provide the complete modified file content. Make the requested changes while preserving the existing structure and style. Return only the complete file content without any explanations or markdown formatting.
-"""
-
-                response = self.gemini_client.models.generate_content(
-                    model="gemini-2.5-flash-preview-05-20", contents=modification_prompt
-                )
-
-                if response and response.text:
-                    new_content = response.text.strip()
-
-                    # Show diff
-                    diff_output = self.show_file_diff(
-                        file_path, current_content, new_content
-                    )
-                    print(f"\n{diff_output}")
-
-                    # Handle confirmation
-                    if auto_confirm:
-                        print(
-                            f"\n✅ Auto-applying changes to {file_path} (already confirmed)"
-                        )
-                        return self.apply_file_changes(file_path, new_content)
-                    else:
-                        # Ask for confirmation
-                        print(f"\n🤔 Apply these changes to {file_path}?")
-                        confirmation = (
-                            input("   Type 'yes' to apply, 'no' to cancel: ")
-                            .strip()
-                            .lower()
+                        arguments["command"] = self._prepare_command_with_venv(
+                            arguments["command"]
                         )
 
-                        if confirmation in ["yes", "y"]:
-                            return self.apply_file_changes(file_path, new_content)
+                    target_func = tool.func
+                    if target_func is None:
+                        return f"Error: Tool '{tool_name}' has no associated function."
+
+                    # Langchain's Tool.func expects arguments as a single string or dict
+                    # depending on how it was defined. We need to inspect the target function.
+                    sig = inspect.signature(target_func) if target_func else None
+                    if not sig:
+                        return f"Error: Tool '{tool_name}' has no valid function signature."
+
+                    if len(sig.parameters) == 1 and list(sig.parameters.keys())[0] in [
+                        "tool_input",
+                        "input_str",
+                        "code_data",
+                        "query",
+                        "file_path",
+                        "command",
+                        "diff_content",
+                    ]:  # Common single arg names
+                        # If the tool function expects a single argument, and we have multiple,
+                        # we might need to pass them as a JSON string or a dict if the tool handles it.
+                        # For now, if arguments is a dict and the func takes one arg, pass the dict.
+                        # This assumes the tool function is designed to unpack it or handle it.
+                        # A more robust solution would involve better schema matching.
+                        if isinstance(arguments, dict) and len(arguments) == 1:
+                            result = target_func(list(arguments.values())[0])
                         else:
-                            print("❌ Changes cancelled")
-                            return False
-                else:
-                    print("❌ Failed to generate modifications")
-                    return False
-            else:
-                print("❌ AI modification requires Gemini API key")
-                return False
+                            # Pass arguments as a JSON string if the tool expects a single string input
+                            if any(
+                                p.annotation == str for p in sig.parameters.values()
+                            ):
+                                result = target_func(json.dumps(arguments))
+                            else:  # Pass the dict directly
+                                result = target_func(arguments)
 
-        except Exception as e:
-            print(f"❌ Error during interactive modification: {e}")
-            return False
+                    else:  # Tool function expects arguments to be unpacked
+                        result = target_func(**arguments)
+
+                    return str(result) if not isinstance(result, str) else result
+                except TypeError as e:
+                    if self.debug:
+                        sig_info = inspect.signature(tool.func) if tool.func else "None"
+                        print(
+                            f"❌ TypeError executing tool {tool_name}: {e}. Args: {arguments}, Sig: {sig_info}"
+                        )
+                    return f"Error: TypeError in tool '{tool_name}'. Check arguments. Details: {e}"
+                except Exception as e:
+                    if self.debug:
+                        print(f"❌ Exception executing tool {tool_name}: {e}")
+                    return f"Error executing tool '{tool_name}': {e}"
+
+        return f"Error: Tool '{tool_name}' not found."
 
 
 # Create a global instance for easy access
