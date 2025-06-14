@@ -2,16 +2,21 @@
 """
 🧬 Symbiote - Your Code. Your Style. Your AI Shadow.
 
-Main entry point for the Symbiote AI coding assistant.
-This intelligent, adaptive coding assistant learns how you code and becomes
-your snarky, ever-evolving sidekick.
+An intelligent terminal-based coding assistant that understands your codebase
+and helps you code faster through natural language commands.
 
 Usage:
+    # Interactive mode (recommended)
+    python main.py
+
+    # Direct command execution
+    python main.py "explain the main function"
+    python main.py "fix the bug in utils.py"
+    python main.py "create a new test file"
+
+    # Legacy modes (still supported)
     python main.py --mode learn --path ./your/codebase
-    python main.py --mode review --diff ./path/to/diff
-    python main.py --mode generate --prompt "Create a function that..."
-    python main.py --mode chat --path ./  # Interactive chat mode
-    python main.py --mode sass --enable
+    python main.py --mode chat --path ./
 
 Author: Vivek Sharma
 License: MIT
@@ -21,9 +26,15 @@ import argparse
 import sys
 import os
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 import readline  # For better input handling
 from datetime import datetime
+import traceback
+import re
+import json
+import signal
+import threading
+import time
 
 # Add the project root to the Python path
 project_root = Path(__file__).parent
@@ -35,9 +46,11 @@ from agents.style_learner import StyleLearnerAgent
 from utils.tools import SymbioteTools, create_symbiote_tools
 from utils.tool_executor import AutonomousToolExecutor, create_autonomous_tool_executor
 from utils.context_manager import SmartContextManager, create_smart_context_manager
-from utils.intelligent_tool_system import IntelligentToolSystem, create_intelligent_tool_system
+from utils.intelligent_tool_system import (
+    SymbioteToolExecutor,
+    create_symbiote_tool_system,
+)
 from dotenv import load_dotenv
-import json
 
 # Load environment variables
 load_dotenv()
@@ -70,26 +83,22 @@ class SymbioteCore:
         self.tools = create_symbiote_tools(
             gemini_api_key=self.gemini_api_key,
             debug=debug,
-            workspace_path=self.workspace_path
+            workspace_path=self.workspace_path,
         )
 
         # Initialize autonomous tool executor
         self.tool_executor = create_autonomous_tool_executor(
-            tools=self.tools,
-            debug=debug,
-            workspace_path=self.workspace_path
+            tools=self.tools, debug=debug, workspace_path=self.workspace_path
         )
 
         # Initialize smart context manager
         self.context_manager = create_smart_context_manager(
-            workspace_path=self.workspace_path,
-            debug=debug
+            workspace_path=self.workspace_path, debug=debug
         )
 
         # Initialize new intelligent tool system
-        self.intelligent_tools = create_intelligent_tool_system(
-            workspace_path=self.workspace_path,
-            debug=debug
+        self.intelligent_tools = create_symbiote_tool_system(
+            workspace_path=self.workspace_path
         )
 
         # Initialize code parser with API key
@@ -453,6 +462,105 @@ Provide only the code with brief explanations, no extra formatting.
 
                 traceback.print_exc()
 
+    def stream_chat(self, workspace_path: str = "./"):
+        """
+        Streaming chat mode for real-time interaction.
+
+        Args:
+            workspace_path: Path to the workspace directory
+        """
+        if not self.gemini_api_key:
+            print("❌ Streaming chat requires GEMINI_API_KEY")
+            print("   Please set your API key to use this feature.")
+            return
+
+        print("🧬 Symbiote Streaming Chat - Natural Language Coding Assistant")
+        print("   Type your requests in natural language. I understand your codebase!")
+        print("   Commands: 'help', 'exit', 'clear'\n")
+
+        # Initialize workspace
+        workspace_path_obj = Path(workspace_path).resolve()
+        if not workspace_path_obj.exists():
+            print(f"❌ Workspace path not found: {workspace_path}")
+            return
+
+        print(f"📁 Working in: {workspace_path}")
+
+        # Quick workspace analysis
+        print("🔍 Analyzing workspace...", end="", flush=True)
+        try:
+            analysis_result = self.code_parser.parse_codebase(str(workspace_path))
+            context = self._prepare_workspace_context(
+                analysis_result, workspace_path_obj
+            )
+            print(" ✅ Ready!\n")
+        except Exception as e:
+            print(f" ⚠️ Limited context available: {e}\n")
+            context = {"error": str(e)}
+
+        # Start streaming session
+        session = StreamingChatSession(
+            workspace_path=workspace_path_obj,
+            workspace_context=context,
+            tools=self.tools,
+            tool_executor=self.tool_executor,
+            context_manager=self.context_manager,
+            intelligent_tools=self.intelligent_tools,
+            gemini_api_key=self.gemini_api_key,
+            debug=self.debug,
+            sass_level=self.sass_level,
+        )
+
+        try:
+            session.start_streaming_session()
+        except KeyboardInterrupt:
+            print("\n\n👋 Goodbye!")
+        except Exception as e:
+            print(f"\n❌ Session error: {e}")
+            if self.debug:
+                traceback.print_exc()
+
+    def execute_command(self, command: str, workspace_path: str = "./"):
+        """
+        Execute a single natural language command and return results.
+
+        Args:
+            command: Natural language command to execute
+            workspace_path: Path to the workspace directory
+        """
+        if not self.gemini_api_key:
+            print("❌ Command execution requires GEMINI_API_KEY")
+            return
+
+        workspace_path_obj = Path(workspace_path).resolve()
+        if not workspace_path_obj.exists():
+            print(f"❌ Workspace path not found: {workspace_path}")
+            return
+
+        # Quick analysis for context
+        try:
+            analysis_result = self.code_parser.parse_codebase(str(workspace_path))
+            context = self._prepare_workspace_context(
+                analysis_result, workspace_path_obj
+            )
+        except Exception as e:
+            context = {"error": str(e)}
+
+        # Execute single command
+        session = StreamingChatSession(
+            workspace_path=workspace_path_obj,
+            workspace_context=context,
+            tools=self.tools,
+            tool_executor=self.tool_executor,
+            context_manager=self.context_manager,
+            intelligent_tools=self.intelligent_tools,
+            gemini_api_key=self.gemini_api_key,
+            debug=self.debug,
+            sass_level=self.sass_level,
+        )
+
+        session.execute_single_command(command)
+
     def _prepare_workspace_context(
         self, analysis_result: CodeAnalysisResult, workspace_path: Path
     ) -> Dict[str, Any]:
@@ -608,11 +716,11 @@ Provide only the code with brief explanations, no extra formatting.
         """Enhance the prompt to encourage multi-step command execution for common patterns."""
         user_lower = user_input.lower()
         suggestions = []
-        
+
         # Common multi-step patterns
         patterns = {
             "cd to.*and.*": "Navigate to directory and perform file operations",
-            "go to.*and.*": "Navigate to directory and perform file operations", 
+            "go to.*and.*": "Navigate to directory and perform file operations",
             "navigate.*and.*": "Navigate to directory and perform file operations",
             "check.*directory.*": "List directory contents and examine files",
             "explore.*": "Navigate and explore directory structure",
@@ -620,11 +728,12 @@ Provide only the code with brief explanations, no extra formatting.
             "explain.*file": "Navigate to file location and read content",
             "show.*file": "Navigate to file location and read content",
             "cd.*explain": "Navigate to directory and read target file",
-            "cd.*show": "Navigate to directory and read target file"
+            "cd.*show": "Navigate to directory and read target file",
         }
-        
+
         for pattern, description in patterns.items():
             import re
+
             if re.search(pattern, user_lower):
                 suggestions.append(f"\nSuggested approach: {description}")
                 suggestions.append("Use multiple EXECUTE_COMMAND entries to:")
@@ -634,10 +743,10 @@ Provide only the code with brief explanations, no extra formatting.
                     if "file" in user_lower:
                         suggestions.append("3. Read the file (cat [filename])")
                 break
-        
+
         if suggestions:
             return "\n" + "\n".join(suggestions) + "\n"
-        
+
         return ""
 
 
@@ -661,8 +770,12 @@ class SymbioteChatSession:
         self.workspace_path = workspace_path
         self.workspace_context = workspace_context
         self.tools = tools  # This will be a SymbioteTools instance
-        self.tool_executor = tool_executor  # This will be an AutonomousToolExecutor instance
-        self.context_manager = context_manager  # This will be a SmartContextManager instance
+        self.tool_executor = (
+            tool_executor  # This will be an AutonomousToolExecutor instance
+        )
+        self.context_manager = (
+            context_manager  # This will be a SmartContextManager instance
+        )
         self.intelligent_tools = intelligent_tools  # New intelligent tool system
         self.gemini_api_key = gemini_api_key
         self.debug = debug
@@ -736,11 +849,11 @@ class SymbioteChatSession:
         """Enhance the prompt to encourage multi-step command execution for common patterns."""
         user_lower = user_input.lower()
         suggestions = []
-        
+
         # Common multi-step patterns
         patterns = {
             "cd to.*and.*": "Navigate to directory and perform file operations",
-            "go to.*and.*": "Navigate to directory and perform file operations", 
+            "go to.*and.*": "Navigate to directory and perform file operations",
             "navigate.*and.*": "Navigate to directory and perform file operations",
             "check.*directory.*": "List directory contents and examine files",
             "explore.*": "Navigate and explore directory structure",
@@ -748,11 +861,12 @@ class SymbioteChatSession:
             "explain.*file": "Navigate to file location and read content",
             "show.*file": "Navigate to file location and read content",
             "cd.*explain": "Navigate to directory and read target file",
-            "cd.*show": "Navigate to directory and read target file"
+            "cd.*show": "Navigate to directory and read target file",
         }
-        
+
         for pattern, description in patterns.items():
             import re
+
             if re.search(pattern, user_lower):
                 suggestions.append(f"\nSuggested approach: {description}")
                 suggestions.append("Use multiple EXECUTE_COMMAND entries to:")
@@ -762,10 +876,10 @@ class SymbioteChatSession:
                     if "file" in user_lower:
                         suggestions.append("3. Read the file (cat [filename])")
                 break
-        
+
         if suggestions:
             return "\n" + "\n".join(suggestions) + "\n"
-        
+
         return ""
 
     def _process_user_query(self, user_input: str):
@@ -782,8 +896,12 @@ class SymbioteChatSession:
             # Try intelligent tool execution first for direct commands
             if self._execute_intelligent_tool_chain(user_input):
                 # Add to conversation history for context
-                self.conversation_history.append({"role": "user", "content": user_input})
-                self.conversation_history.append({"role": "assistant", "content": "Executed using intelligent tools"})
+                self.conversation_history.append(
+                    {"role": "user", "content": user_input}
+                )
+                self.conversation_history.append(
+                    {"role": "assistant", "content": "Executed using intelligent tools"}
+                )
                 return
 
             # Add user input to conversation history
@@ -828,24 +946,34 @@ Be specific about file operations and always show what you're going to change.""
 
             if response and response.text:
                 ai_response = response.text
-                
+
                 # Use autonomous tool executor to process the AI response
                 if self.tool_executor:
-                    enhanced_response, tool_results = self.tool_executor.process_llm_response(ai_response)
-                    
+                    enhanced_response, tool_results = (
+                        self.tool_executor.process_llm_response(ai_response)
+                    )
+
                     if tool_results:
                         # Tools were executed - show the enhanced response with results
                         print(enhanced_response)
-                        
+
                         # Track successful tool executions if context manager is available
                         if self.context_manager:
-                            tools_used = [r.tool_call.tool_name for r in tool_results if r.success]
+                            tools_used = [
+                                r.tool_call.tool_name for r in tool_results if r.success
+                            ]
                             self.context_manager.track_interaction(
                                 query=user_input,
-                                intent=self.context_manager.infer_user_intent(user_input) if hasattr(self.context_manager, 'infer_user_intent') else 'analysis',
+                                intent=(
+                                    self.context_manager.infer_user_intent(user_input)
+                                    if hasattr(
+                                        self.context_manager, "infer_user_intent"
+                                    )
+                                    else "analysis"
+                                ),
                                 files_accessed=[],  # Could be enhanced to track actual files
                                 tools_used=tools_used,
-                                success=any(r.success for r in tool_results)
+                                success=any(r.success for r in tool_results),
                             )
                     else:
                         # No tools executed - show original response
@@ -886,12 +1014,12 @@ Be specific about file operations and always show what you're going to change.""
         """Determine if tools should be auto-executed based on user query and AI response."""
         user_lower = user_query.lower()
         ai_lower = ai_response.lower()
-        
+
         # Auto-execute for common analysis requests
         analysis_patterns = [
             "analyze this",
             "what does this do",
-            "explain this", 
+            "explain this",
             "how does this work",
             "what is this",
             "find bugs",
@@ -905,17 +1033,17 @@ Be specific about file operations and always show what you're going to change.""
             "examine the file",
             "read the file",
         ]
-        
+
         # Auto-execute if AI mentions it will examine/check/read files
         ai_action_patterns = [
             "let me check",
-            "let me read", 
+            "let me read",
             "let me examine",
             "i'll read",
             "i'll check",
             "i'll examine",
             "i need to read",
-            "i need to check", 
+            "i need to check",
             "i should read",
             "i should check",
             "let me look at",
@@ -926,41 +1054,69 @@ Be specific about file operations and always show what you're going to change.""
             "i should examine",
             "i'll take a look",
         ]
-        
-        return (
-            any(pattern in user_lower for pattern in analysis_patterns) or
-            any(pattern in ai_lower for pattern in ai_action_patterns)
+
+        return any(pattern in user_lower for pattern in analysis_patterns) or any(
+            pattern in ai_lower for pattern in ai_action_patterns
         )
 
     def _execute_intelligent_tool_chain(self, user_query: str) -> bool:
         """Execute intelligent tool chain based on user query."""
         if not self.intelligent_tools:
             return False
-        
+
         try:
             # Determine which tool to use based on query
             query_lower = user_query.lower()
-            
+
             # FileExplorer patterns
             file_patterns = [
-                "read", "show", "open", "view", "cat", "display",
-                "list", "ls", "dir", "files", "directory",
-                "find", "search", "grep", "locate",
-                "analyze", "parse", "inspect", "examine"
+                "read",
+                "show",
+                "open",
+                "view",
+                "cat",
+                "display",
+                "list",
+                "ls",
+                "dir",
+                "files",
+                "directory",
+                "find",
+                "search",
+                "grep",
+                "locate",
+                "analyze",
+                "parse",
+                "inspect",
+                "examine",
             ]
-            
-            # GitManager patterns  
+
+            # GitManager patterns
             git_patterns = [
-                "git", "status", "log", "diff", "branch", "commit",
-                "push", "pull", "history", "changes"
+                "git",
+                "status",
+                "log",
+                "diff",
+                "branch",
+                "commit",
+                "push",
+                "pull",
+                "history",
+                "changes",
             ]
-            
+
             # CodeAnalyzer patterns
             code_patterns = [
-                "complexity", "smells", "patterns", "metrics", "review",
-                "quality", "refactor", "issues"
+                "complexity",
+                "smells",
+                "patterns",
+                "metrics",
+                "review",
+                "quality",
+                "refactor",
+                "issues",
             ]
-            
+
             # Determine which tool to use
             tool_name = None
             if any(pattern in query_lower for pattern in git_patterns):
@@ -972,11 +1128,11 @@ Be specific about file operations and always show what you're going to change.""
             elif any(pattern in query_lower for pattern in file_patterns):
                 tool_name = "FileExplorer"
                 print(f"\n📁 Using FileExplorer for: {user_query}")
-            
+
             if tool_name:
                 # Execute tool chain
                 chain = self.intelligent_tools.execute_tool_chain(tool_name, user_query)
-                
+
                 if chain.status.value in ["completed", "success"]:
                     print(chain.final_output)
                     return True
@@ -985,13 +1141,14 @@ Be specific about file operations and always show what you're going to change.""
                     if chain.executions and chain.executions[-1].error_message:
                         print(f"Error: {chain.executions[-1].error_message}")
                     return False
-            
+
             return False
-            
+
         except Exception as e:
             if self.debug:
                 print(f"❌ Error in intelligent tool execution: {e}")
                 import traceback
+
                 traceback.print_exc()
             return False
 
@@ -1523,14 +1680,14 @@ and **directly modify your files** with your permission!
         """Handle terminal command execution requests from AI responses with batch support."""
         if not self.tools:
             return
-            
+
         # Parse all commands from AI response
         commands = self.tools.parse_ai_file_commands(ai_response)
-        execute_commands = [cmd for cmd in commands if cmd['operation'] == 'execute']
-        
+        execute_commands = [cmd for cmd in commands if cmd["operation"] == "execute"]
+
         if not execute_commands:
             return
-            
+
         # If multiple commands, execute them as a batch
         if len(execute_commands) > 1:
             self._execute_command_batch(execute_commands)
@@ -1538,7 +1695,7 @@ and **directly modify your files** with your permission!
             # Single command execution
             cmd = execute_commands[0]
             print(f"\n💻 Executing: {cmd['command']}")
-            success, output = self.tools.execute_terminal_command(cmd['command'])
+            success, output = self.tools.execute_terminal_command(cmd["command"])
             print(output)
             if not success:
                 print("❌ Command failed")
@@ -1547,55 +1704,63 @@ and **directly modify your files** with your permission!
         """Execute multiple commands in sequence and provide comprehensive output."""
         print(f"\n🔄 Executing batch of {len(commands)} commands...")
         print("=" * 60)
-        
+
         batch_results = []
         overall_success = True
         current_directory = str(self.workspace_path)  # Track current directory
-        
+
         # Process commands in sequence
         i = 0
         while i < len(commands):
             cmd = commands[i]
-            command = cmd['command']
+            command = cmd["command"]
             print(f"\n💻 [{i+1}/{len(commands)}] {command}")
             print("-" * 40)
-            
+
             # Handle cd commands specially by chaining with next command
-            if command.strip().startswith('cd '):
+            if command.strip().startswith("cd "):
                 target_dir = command.strip()[3:].strip()
-                
+
                 # Update current directory tracking
-                if target_dir.startswith('/'):
+                if target_dir.startswith("/"):
                     current_directory = target_dir
                 else:
                     current_directory = str(Path(current_directory) / target_dir)
-                
+
                 # If there's a next command, chain it with cd
                 if i + 1 < len(commands):
                     next_cmd = commands[i + 1]
                     chained_command = f"cd {target_dir} && {next_cmd['command']}"
-                    
+
                     print(f"🔗 Chaining with next command: {next_cmd['command']}")
-                    success, output = self.tools.execute_terminal_command(chained_command) if self.tools else (False, "No tools available")
-                    
+                    success, output = (
+                        self.tools.execute_terminal_command(chained_command)
+                        if self.tools
+                        else (False, "No tools available")
+                    )
+
                     # Record both commands as executed
-                    batch_results.append({
-                        'command': command,
-                        'success': True,
-                        'output': f"Changed directory to {target_dir}",
-                        'index': i + 1
-                    })
-                    
-                    batch_results.append({
-                        'command': next_cmd['command'],
-                        'success': success,
-                        'output': output,
-                        'index': i + 2
-                    })
-                    
+                    batch_results.append(
+                        {
+                            "command": command,
+                            "success": True,
+                            "output": f"Changed directory to {target_dir}",
+                            "index": i + 1,
+                        }
+                    )
+
+                    batch_results.append(
+                        {
+                            "command": next_cmd["command"],
+                            "success": success,
+                            "output": output,
+                            "index": i + 2,
+                        }
+                    )
+
                     # Skip the next command since we already executed it
                     i += 2  # Skip both current and next command
-                    
+
                     if success:
                         print(f"✅ Success")
                         if output.strip():
@@ -1606,25 +1771,33 @@ and **directly modify your files** with your permission!
                         overall_success = False
                 else:
                     # Just cd without next command
-                    batch_results.append({
-                        'command': command,
-                        'success': True,
-                        'output': f"Changed directory to {target_dir}",
-                        'index': i + 1
-                    })
+                    batch_results.append(
+                        {
+                            "command": command,
+                            "success": True,
+                            "output": f"Changed directory to {target_dir}",
+                            "index": i + 1,
+                        }
+                    )
                     print(f"✅ Success - Changed directory to {target_dir}")
                     i += 1
             else:
                 # Regular command execution
-                success, output = self.tools.execute_terminal_command(command) if self.tools else (False, "No tools available")
-                
-                batch_results.append({
-                    'command': command,
-                    'success': success,
-                    'output': output,
-                    'index': i + 1
-                })
-                
+                success, output = (
+                    self.tools.execute_terminal_command(command)
+                    if self.tools
+                    else (False, "No tools available")
+                )
+
+                batch_results.append(
+                    {
+                        "command": command,
+                        "success": success,
+                        "output": output,
+                        "index": i + 1,
+                    }
+                )
+
                 if success:
                     print(f"✅ Success")
                     if output.strip():
@@ -1633,20 +1806,26 @@ and **directly modify your files** with your permission!
                     print(f"❌ Failed")
                     print(output)
                     overall_success = False
-                    
+
                     # Ask if user wants to continue on failure
                     if i + 1 < len(commands):
                         try:
-                            continue_choice = input(f"\n⚠️  Command {i+1} failed. Continue with remaining commands? (y/n): ").strip().lower()
-                            if continue_choice not in ['y', 'yes']:
+                            continue_choice = (
+                                input(
+                                    f"\n⚠️  Command {i+1} failed. Continue with remaining commands? (y/n): "
+                                )
+                                .strip()
+                                .lower()
+                            )
+                            if continue_choice not in ["y", "yes"]:
                                 print("🛑 Batch execution stopped by user")
                                 break
                         except KeyboardInterrupt:
                             print("\n🛑 Batch execution interrupted")
                             break
-                
+
                 i += 1
-        
+
         # Provide comprehensive summary
         self._show_batch_summary(batch_results, overall_success)
 
@@ -1655,108 +1834,272 @@ and **directly modify your files** with your permission!
         print("\n" + "=" * 60)
         print("📊 BATCH EXECUTION SUMMARY")
         print("=" * 60)
-        
-        successful_commands = [r for r in results if r['success']]
-        failed_commands = [r for r in results if not r['success']]
-        
+
+        successful_commands = [r for r in results if r["success"]]
+        failed_commands = [r for r in results if not r["success"]]
+
         print(f"📈 Total Commands: {len(results)}")
         print(f"✅ Successful: {len(successful_commands)}")
         print(f"❌ Failed: {len(failed_commands)}")
         print(f"🎯 Success Rate: {len(successful_commands)/len(results)*100:.1f}%")
-        
+
         if failed_commands:
             print(f"\n⚠️  Failed Commands:")
             for result in failed_commands:
                 print(f"   {result['index']}. {result['command']}")
-        
+
         if overall_success:
             print(f"\n🎉 All commands executed successfully!")
         else:
             print(f"\n⚠️  Some commands failed. Check outputs above for details.")
-        
+
         # Show key outputs if they contain useful information
         self._highlight_important_outputs(results)
-        
+
         print("=" * 60)
 
     def _highlight_important_outputs(self, results: List[Dict]):
         """Highlight important information from command outputs."""
         important_patterns = [
-            'error', 'warning', 'failed', 'success', 'completed',
-            'installed', 'updated', 'created', 'deleted', 'modified',
-            'running', 'started', 'stopped', 'listening', 'port',
-            'version', 'found', 'not found', 'permission denied'
+            "error",
+            "warning",
+            "failed",
+            "success",
+            "completed",
+            "installed",
+            "updated",
+            "created",
+            "deleted",
+            "modified",
+            "running",
+            "started",
+            "stopped",
+            "listening",
+            "port",
+            "version",
+            "found",
+            "not found",
+            "permission denied",
         ]
-        
+
         highlighted_results = []
-        
+
         for result in results:
-            if not result['success']:
+            if not result["success"]:
                 continue
-                
-            output_lower = result['output'].lower()
+
+            output_lower = result["output"].lower()
             if any(pattern in output_lower for pattern in important_patterns):
                 # Extract important lines
-                lines = result['output'].split('\n')
+                lines = result["output"].split("\n")
                 important_lines = []
-                
+
                 for line in lines:
                     line_lower = line.lower()
                     if any(pattern in line_lower for pattern in important_patterns):
                         important_lines.append(line.strip())
-                
+
                 if important_lines:
-                    highlighted_results.append({
-                        'command': result['command'],
-                        'highlights': important_lines[:3]  # Limit to 3 most important lines
-                    })
-        
+                    highlighted_results.append(
+                        {
+                            "command": result["command"],
+                            "highlights": important_lines[
+                                :3
+                            ],  # Limit to 3 most important lines
+                        }
+                    )
+
         if highlighted_results:
             print(f"\n🔍 Key Information:")
             for result in highlighted_results:
                 print(f"\n   📌 {result['command']}")
-                for highlight in result['highlights']:
+                for highlight in result["highlights"]:
                     if highlight:
                         print(f"      • {highlight}")
 
     def _extract_multiple_commands(self, ai_response: str) -> List[str]:
         """Extract multiple EXECUTE_COMMAND entries from AI response."""
         commands = []
-        lines = ai_response.split('\n')
-        
+        lines = ai_response.split("\n")
+
         for line in lines:
             line = line.strip()
-            if line.startswith('EXECUTE_COMMAND:'):
-                command = line.replace('EXECUTE_COMMAND:', '').strip()
+            if line.startswith("EXECUTE_COMMAND:"):
+                command = line.replace("EXECUTE_COMMAND:", "").strip()
                 if command:
                     commands.append(command)
-        
+
         return commands
+
+
+class StreamingChatSession(SymbioteChatSession):
+    """
+    Streaming chat session for real-time natural language interaction.
+    Extends SymbioteChatSession with streaming capabilities and direct command support.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.streaming_mode = True
+
+    def start_streaming_session(self):
+        """Start streaming interactive session with real-time responses."""
+        while True:
+            try:
+                # Get user input
+                user_input = input("\n🧬 ").strip()
+
+                if not user_input:
+                    continue
+
+                # Handle special commands
+                if user_input.lower() in ["exit", "quit", "bye"]:
+                    break
+                elif user_input.lower() == "help":
+                    self._show_help()
+                    continue
+                elif user_input.lower() == "clear":
+                    self.conversation_history = []
+                    print("🗑️ Conversation cleared!")
+                    continue
+
+                # Process with streaming response
+                print("\n🤖 ", end="", flush=True)
+                self._process_streaming_query(user_input)
+
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                print(f"\n❌ Error: {e}")
+                if self.debug:
+                    import traceback
+
+                    traceback.print_exc()
+
+    def execute_single_command(self, command: str):
+        """Execute a single command and return results."""
+        print(f"🧬 Executing: {command}")
+        print("🤖 ", end="", flush=True)
+        self._process_streaming_query(command)
+
+    def _process_streaming_query(self, user_input: str):
+        """Process query with streaming response capability."""
+        if not self.gemini_client:
+            print("❌ AI assistant not available")
+            return
+
+        try:
+            # Check for direct commands first
+            if self._handle_direct_file_operations(user_input):
+                return
+
+            if self._execute_intelligent_tool_chain(user_input):
+                return
+
+            # Add to conversation history
+            self.conversation_history.append({"role": "user", "content": user_input})
+
+            # Create prompt
+            system_prompt = self._create_streaming_system_prompt()
+            context = self._format_conversation_history()
+
+            prompt = f"""{system_prompt}
+
+Working Directory: {self.workspace_path}
+Recent Context: {context}
+
+User: {user_input}
+
+Respond naturally and help with the request. If you need to execute commands, use EXECUTE_COMMAND: format."""
+
+            # Get streaming response
+            response = self.gemini_client.models.generate_content(
+                model="gemini-2.5-flash-preview-05-20", contents=prompt
+            )
+
+            if response and response.text:
+                ai_response = response.text
+                print(ai_response)
+
+                # Execute any commands found in response
+                self._handle_terminal_commands(ai_response)
+
+                # Add to history
+                self.conversation_history.append(
+                    {"role": "assistant", "content": ai_response}
+                )
+            else:
+                print("I didn't catch that. Could you rephrase?")
+
+        except Exception as e:
+            print(f"Error: {e}")
+            if self.debug:
+                import traceback
+
+                traceback.print_exc()
+
+    def _create_streaming_system_prompt(self) -> str:
+        """Create optimized system prompt for streaming mode."""
+        files_context = ""
+        if self.workspace_context.get("file_structure"):
+            files = [f["name"] for f in self.workspace_context["file_structure"][:5]]
+            files_context = f"Files: {', '.join(files)}"
+
+        return f"""You are Symbiote, a natural language coding assistant.
+
+Workspace: {self.workspace_context.get('language', 'Mixed')} project
+{files_context}
+
+I can help with:
+- Code analysis and explanation
+- File operations (read/modify/create files)
+- Terminal commands (use EXECUTE_COMMAND: format)
+- Debugging and problem-solving
+- Code review and suggestions
+
+For terminal commands, use: EXECUTE_COMMAND: [command]
+For multiple commands: Use multiple EXECUTE_COMMAND lines
+
+Be concise but helpful. Execute commands when needed."""
 
 
 def main():
     """Main entry point for Symbiote."""
+    # Check if positional arguments for direct command execution
+    if len(sys.argv) > 1 and not sys.argv[1].startswith("--"):
+        # Direct command execution mode
+        command = " ".join(sys.argv[1:])
+        print("🧬 Symbiote - Natural Language Coding Assistant")
+
+        # Initialize Symbiote with minimal setup
+        symbiote = SymbioteCore(debug=False, sass_level=5)
+        symbiote.execute_command(command)
+        return
+
+    # Traditional argument parsing for legacy modes
     parser = argparse.ArgumentParser(
         description="🧬 Symbiote - Your Code. Your Style. Your AI Shadow.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
+Interactive Examples:
+  %(prog)s                                    # Start interactive mode
+  %(prog)s "explain the main function"         # Direct command
+  %(prog)s "fix the bug in utils.py"          # Natural language
+  %(prog)s "create a new test file"           # File operations
+
+Legacy Examples:
   %(prog)s --mode learn --path ./my_project
-  %(prog)s --mode review --diff ./changes.patch
-  %(prog)s --mode generate --prompt "Create a REST API endpoint"
   %(prog)s --mode chat --path ./my_project
-  %(prog)s --mode sass --enable
         """,
     )
 
     parser.add_argument(
         "--mode",
-        choices=["learn", "review", "generate", "sass", "chat"],
-        required=True,
-        help="Operation mode",
+        choices=["learn", "review", "generate", "sass", "chat", "stream"],
+        help="Operation mode (optional - defaults to interactive)",
     )
 
-    parser.add_argument("--path", help="Path to codebase (for learn mode)")
+    parser.add_argument("--path", help="Path to codebase", default="./")
 
     parser.add_argument("--diff", help="Path to diff file (for review mode)")
 
@@ -1778,6 +2121,7 @@ Examples:
         help="Sass level (0=vanilla, 10=tsundere meltdown)",
     )
 
+    # Parse arguments
     args = parser.parse_args()
 
     # Initialize Symbiote
@@ -1787,9 +2131,12 @@ Examples:
     print("   Your Code. Your Style. Your AI Shadow.\n")
 
     try:
+        # If no mode specified, start interactive streaming mode
+        if not args.mode:
+            symbiote.stream_chat(args.path)
+            return
+
         if args.mode == "learn":
-            if not args.path:
-                parser.error("--path is required for learn mode")
             symbiote.learn_mode(args.path, args.output)
 
         elif args.mode == "review":
@@ -1811,9 +2158,10 @@ Examples:
                 parser.error("--enable or --disable is required for sass mode")
 
         elif args.mode == "chat":
-            if not args.path:
-                parser.error("--path is required for chat mode")
             symbiote.chat_mode(args.path)
+
+        elif args.mode == "stream":
+            symbiote.stream_chat(args.path)
 
     except KeyboardInterrupt:
         print("\n\n👋 Symbiote interrupted. See you later!")
