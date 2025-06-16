@@ -23,7 +23,7 @@ class SymbioteOrchestrator:
     Manages multi-agent workflows, memory, and intelligent interactions.
     """
 
-    def __init__(self, use_langgraph: bool = True):
+    def __init__(self, use_langgraph: bool = True, verbose: bool = True):
         # Core components
         self.tool_registry = ToolRegistry()
         self.memory_store: Optional[VectorMemoryStore] = None
@@ -35,6 +35,7 @@ class SymbioteOrchestrator:
         # Workflow management
         self.use_langgraph = use_langgraph
         self.workflow: Optional[SymbioteWorkflow] = None
+        self.verbose = verbose
 
         # State
         self.current_sass_level = SassLevel.FRIENDLY
@@ -81,7 +82,7 @@ class SymbioteOrchestrator:
             await self._register_enhanced_tools()
 
             # Initialize agents
-            self.llama_agent = LlamaAgent(llama_config, self.tool_registry)
+            self.llama_agent = LlamaAgent(llama_config, self.tool_registry, verbose=self.verbose)
             self.gemini_agent = GeminiAgent(gemini_config)
 
             # Connect agents
@@ -98,7 +99,7 @@ class SymbioteOrchestrator:
             # Initialize LangGraph workflow if enabled
             if self.use_langgraph and self.memory_store:
                 print("🔄 Initializing LangGraph workflow...")
-                self.workflow = SymbioteWorkflow(self.tool_registry, self.memory_store)
+                self.workflow = SymbioteWorkflow(self.tool_registry, self.memory_store, verbose=self.verbose)
                 self.workflow.set_agents(self.llama_agent, self.gemini_agent)
                 print("✅ LangGraph workflow initialized")
 
@@ -153,6 +154,13 @@ class SymbioteOrchestrator:
         """Register core tools with the tool registry (legacy method)."""
         await self._register_enhanced_tools()
 
+    def set_verbose(self, verbose: bool):
+        """Set verbose mode for debugging output."""
+        self.verbose = verbose
+        # Pass verbose setting to workflow if available
+        if self.workflow:
+            self.workflow.set_verbose(verbose)
+
     async def process_user_input(self, user_input: str) -> str:
         """
         Process user input with workflow capabilities.
@@ -169,7 +177,8 @@ class SymbioteOrchestrator:
 
         # Use LangGraph workflow if available for interactions
         if self.use_langgraph and self.workflow:
-            print("🔄 Using LangGraph workflow for processing...")
+            if self.verbose:
+                print("🔄 Using LangGraph workflow for processing...")
             try:
                 response = await self.workflow.process_query(
                     user_query=user_input, thread_id=f"conv_{self.conversation_id}"
@@ -181,7 +190,8 @@ class SymbioteOrchestrator:
 
                 return response
             except Exception as e:
-                print(f"⚠️ LangGraph workflow failed, falling back to direct agent: {e}")
+                if self.verbose:
+                    print(f"⚠️ LangGraph workflow failed, falling back to direct agent: {e}")
 
         # Fallback to direct agent processing
         if not self.llama_agent:

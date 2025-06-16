@@ -44,8 +44,8 @@ async def main():
         print("❌ No API keys found. Please set up your .env file with API keys.")
         print("See .env.example for the required format.\n")
 
-    # Initialize orchestrator
-    orchestrator = SymbioteOrchestrator(use_langgraph=True)
+    # Initialize orchestrator (quiet mode after initialization)
+    orchestrator = SymbioteOrchestrator(use_langgraph=True, verbose=True)
 
     # Initialize with default configs
     success = await orchestrator.initialize()
@@ -53,7 +53,9 @@ async def main():
         print("❌ Failed to initialize Symbiote. Exiting.")
         return
 
-    print()
+    # Switch to quiet mode after initialization
+    orchestrator.set_verbose(False)
+    print("✅ Symbiote is ready! (Use /help for commands)\n")
 
     # Main chat loop
     while True:

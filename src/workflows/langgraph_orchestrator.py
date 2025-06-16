@@ -40,11 +40,12 @@ class SymbioteWorkflow:
     with advanced AI patterns, with intelligent routing and state management.
     """
 
-    def __init__(self, tool_registry: ToolRegistry, memory_store: VectorMemoryStore):
+    def __init__(self, tool_registry: ToolRegistry, memory_store: VectorMemoryStore, verbose: bool = True):
         self.tool_registry = tool_registry
         self.memory_store = memory_store
         self.llama_agent: Optional[LlamaAgent] = None
         self.gemini_agent: Optional[GeminiAgent] = None
+        self.verbose = verbose
 
         # LangGraph components
         self.workflow = None
@@ -52,6 +53,15 @@ class SymbioteWorkflow:
 
         # Build the workflow graph
         self._build_workflow()
+
+    def _vprint(self, message: str):
+        """Print message only if verbose mode is enabled."""
+        if self.verbose:
+            print(message)
+
+    def set_verbose(self, verbose: bool):
+        """Set verbose mode for workflow debugging output."""
+        self.verbose = verbose
 
     def set_agents(self, llama_agent: LlamaAgent, gemini_agent: GeminiAgent):
         """Set the agents for the workflow."""
@@ -245,7 +255,7 @@ class SymbioteWorkflow:
         """Analyze the user query to understand intent and requirements."""
         user_query = state["user_query"]
 
-        print(f"🔍 Analyzing query: {user_query[:50]}...")
+        self._vprint(f"🔍 Analyzing query: {user_query[:50]}...")
 
         # Simple intent analysis (can be enhanced with ML)
         intent_keywords = {
@@ -284,7 +294,7 @@ class SymbioteWorkflow:
         user_query = state["user_query"]
         language = state["code_context"].get("language", "python")
 
-        print("🧠 Retrieving relevant patterns from memory...")
+        self._vprint("🧠 Retrieving relevant patterns from memory...")
 
         try:
             if not self.memory_store:
@@ -313,7 +323,7 @@ class SymbioteWorkflow:
                 )
 
             state["memory_patterns"] = memory_patterns
-            print(f"📚 Found {len(memory_patterns)} relevant patterns")
+            self._vprint(f"📚 Found {len(memory_patterns)} relevant patterns")
 
         except Exception as e:
             print(f"⚠️ Error retrieving patterns: {e}")
@@ -333,7 +343,7 @@ class SymbioteWorkflow:
         else:
             state["current_agent"] = "llama"  # Default
 
-        print(f"🎯 Routing to {state['current_agent']} agent for {intent}")
+        self._vprint(f"🎯 Routing to {state['current_agent']} agent for {intent}")
         state["workflow_step"] = "agent_routed"
         return state
 
@@ -356,7 +366,7 @@ class SymbioteWorkflow:
             state["error_state"] = "LLaMA agent not available"
             return state
 
-        print("🔧 Executing tools...")
+        self._vprint("🔧 Executing tools...")
 
         try:
             # Create message for LLaMA agent
@@ -395,7 +405,7 @@ class SymbioteWorkflow:
             state["error_state"] = "Gemini agent not available"
             return state
 
-        print("💻 Generating code with context...")
+        self._vprint("💻 Generating code with context...")
 
         try:
             # Build enhanced context
@@ -430,7 +440,7 @@ class SymbioteWorkflow:
                 "explanation", ""
             )
 
-            print("✅ Code generated successfully")
+            self._vprint("✅ Code generated successfully")
 
         except Exception as e:
             print(f"❌ Error generating code: {e}")
@@ -444,7 +454,7 @@ class SymbioteWorkflow:
         current_agent = state["current_agent"]
         user_query = state["user_query"]
 
-        print(f"💬 Getting direct response from {current_agent} agent...")
+        self._vprint(f"💬 Getting direct response from {current_agent} agent...")
 
         try:
             if current_agent == "llama" and self.llama_agent:
@@ -478,7 +488,7 @@ class SymbioteWorkflow:
             else:
                 state["agent_response"] = "I'm here to help! What would you like me to do?"
 
-            print("✅ Got agent response")
+            self._vprint("✅ Got agent response")
 
         except Exception as e:
             print(f"❌ Error getting agent response: {e}")
@@ -489,7 +499,7 @@ class SymbioteWorkflow:
 
     async def _review_and_refine(self, state: WorkflowState) -> WorkflowState:
         """Review and refine the generated output."""
-        print("🔍 Reviewing and refining output...")
+        self._vprint("🔍 Reviewing and refining output...")
 
         # Simple quality checks
         generated_code = state["code_context"].get("generated_code", "")
@@ -518,7 +528,7 @@ class SymbioteWorkflow:
 
     async def _learn_patterns(self, state: WorkflowState) -> WorkflowState:
         """Learn from the interaction and store patterns."""
-        print("🧠 Learning from interaction...")
+        self._vprint("🧠 Learning from interaction...")
 
         try:
             generated_code = state["code_context"].get("generated_code", "")
@@ -544,7 +554,7 @@ class SymbioteWorkflow:
 
     async def _finalize_response(self, state: WorkflowState) -> WorkflowState:
         """Finalize the response to the user."""
-        print("📝 Finalizing response...")
+        self._vprint("📝 Finalizing response...")
 
         # Build final response
         response_parts = []
@@ -658,11 +668,12 @@ class SymbioteWorkflow:
         """
         Process a user query through the complete workflow.
         """
-        print(f"🚀 Starting workflow for: {user_query[:50]}...")
+        self._vprint(f"🚀 Starting workflow for: {user_query[:50]}...")
 
         # Ensure workflow is built
         if self.workflow is None:
-            print("⚠️ Workflow not compiled, rebuilding...")
+            if self.verbose:
+                print("⚠️ Workflow not compiled, rebuilding...")
             self._build_workflow()
 
         if self.workflow is None:
@@ -686,7 +697,7 @@ class SymbioteWorkflow:
             config = RunnableConfig(configurable={"thread_id": thread_id})
             final_state = await self.workflow.ainvoke(initial_state, config=config)
 
-            print("✅ Workflow completed successfully")
+            self._vprint("✅ Workflow completed successfully")
             return final_state.get("final_response", "No response generated")
 
         except Exception as e:

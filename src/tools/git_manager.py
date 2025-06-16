@@ -36,7 +36,8 @@ class GitManagerTool(BaseTool):
                 message = parameters.get("message", "")
                 return await self._git_commit(message)
             elif operation == "push":
-                return await self._git_push()
+                branch = parameters.get("branch", "")
+                return await self._git_push(branch)
             elif operation == "pull":
                 return await self._git_pull()
             elif operation == "diff":
@@ -46,6 +47,10 @@ class GitManagerTool(BaseTool):
                 return await self._git_log(count)
             elif operation == "branch":
                 return await self._git_branch()
+            elif operation == "checkout":
+                branch = parameters.get("branch", "")
+                create_new = parameters.get("create_new", False)
+                return await self._git_checkout(branch, create_new)
             else:
                 return self.create_error_result(f"Unknown operation: {operation}")
                 
@@ -94,9 +99,12 @@ class GitManagerTool(BaseTool):
             return self.create_error_result("Commit message is required")
         return await self._run_git_command(["commit", "-m", message])
     
-    async def _git_push(self) -> ToolResult:
+    async def _git_push(self, branch: str = "") -> ToolResult:
         """Push changes to remote repository."""
-        return await self._run_git_command(["push"])
+        if branch:
+            return await self._run_git_command(["push", "origin", branch])
+        else:
+            return await self._run_git_command(["push"])
     
     async def _git_pull(self) -> ToolResult:
         """Pull changes from remote repository."""
@@ -114,6 +122,16 @@ class GitManagerTool(BaseTool):
         """Show git branches."""
         return await self._run_git_command(["branch", "-a"])
     
+    async def _git_checkout(self, branch: str, create_new: bool = False) -> ToolResult:
+        """Checkout or create a new branch."""
+        if not branch:
+            return self.create_error_result("Branch name is required")
+        
+        if create_new:
+            return await self._run_git_command(["checkout", "-b", branch])
+        else:
+            return await self._run_git_command(["checkout", branch])
+
     def validate_parameters(self, parameters: Dict[str, Any]) -> bool:
         """Validate input parameters."""
         if "operation" not in parameters:

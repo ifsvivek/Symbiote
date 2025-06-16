@@ -33,6 +33,9 @@ class FileManagerTool(BaseTool):
             elif operation == "write":
                 content = parameters.get("content", "")
                 return await self._write_file(str(file_path), content)
+            elif operation == "append":
+                content = parameters.get("content", "")
+                return await self._append_file(str(file_path), content)
             elif operation == "create":
                 return await self._create_file(str(file_path))
             elif operation == "delete":
@@ -87,6 +90,28 @@ class FileManagerTool(BaseTool):
             
             return self.create_success_result(
                 {"file_path": file_path, "bytes_written": len(content.encode('utf-8'))},
+                metadata
+            )
+        except PermissionError:
+            return self.create_error_result(f"Permission denied: {file_path}")
+    
+    async def _append_file(self, file_path: str, content: str) -> ToolResult:
+        """Append content to file."""
+        try:
+            # Create directory if it doesn't exist
+            Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(file_path, 'a', encoding='utf-8') as f:
+                f.write(content)
+            
+            file_info = os.stat(file_path)
+            metadata = {
+                "size": file_info.st_size,
+                "bytes_appended": len(content.encode('utf-8'))
+            }
+            
+            return self.create_success_result(
+                {"file_path": file_path, "bytes_appended": len(content.encode('utf-8'))},
                 metadata
             )
         except PermissionError:
@@ -160,17 +185,17 @@ class FileManagerTool(BaseTool):
                 return False
         
         operation = parameters.get("operation")
-        valid_operations = ["read", "write", "create", "delete", "list", "exists"]
+        valid_operations = ["read", "write", "append", "create", "delete", "list", "exists"]
         
         if operation not in valid_operations:
             return False
         
         # Check operation-specific requirements
-        if operation in ["read", "write", "create", "delete", "exists"]:
+        if operation in ["read", "write", "append", "create", "delete", "exists"]:
             if "file_path" not in parameters:
                 return False
         
-        if operation == "write" and "content" not in parameters:
+        if operation in ["write", "append"] and "content" not in parameters:
             return False
         
         return True
@@ -185,7 +210,7 @@ class FileManagerTool(BaseTool):
                 "operation": {
                     "type": "string",
                     "required": True,
-                    "options": ["read", "write", "create", "delete", "list", "exists"],
+                    "options": ["read", "write", "append", "create", "delete", "list", "exists"],
                     "description": "Type of file operation to perform"
                 },
                 "file_path": {
@@ -195,8 +220,8 @@ class FileManagerTool(BaseTool):
                 },
                 "content": {
                     "type": "string",
-                    "required": "for write operation",
-                    "description": "Content to write to file"
+                    "required": "for write and append operations",
+                    "description": "Content to write or append to file"
                 },
                 "directory": {
                     "type": "string",

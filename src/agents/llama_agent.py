@@ -32,12 +32,13 @@ class LlamaAgent(BaseAgent):
     Enhanced with modern tool calling patterns and proper Groq tool use integration.
     """
 
-    def __init__(self, config: AgentConfig, tool_registry: ToolRegistry):
+    def __init__(self, config: AgentConfig, tool_registry: ToolRegistry, verbose: bool = True):
         super().__init__(config)
         self.tool_registry = tool_registry
         self.gemini_agent = None  # Will be set by the orchestrator
         self.llm = None
         self.langchain_history: List[BaseMessage] = []
+        self.verbose = verbose
 
     async def initialize(self) -> bool:
         """Initialize the LLaMA agent with LangChain ChatGroq and proper tool binding."""
@@ -144,7 +145,8 @@ class LlamaAgent(BaseAgent):
         
         # Check if response contains tool calls (LangChain format)
         if hasattr(response, 'tool_calls') and response.tool_calls:
-            print(f"[{self.name}] Processing {len(response.tool_calls)} tool call(s)...")
+            if self.verbose:
+                print(f"[{self.name}] Processing {len(response.tool_calls)} tool call(s)...")
             
             # Execute all tool calls (supports parallel execution)
             tool_messages = []
@@ -191,7 +193,8 @@ class LlamaAgent(BaseAgent):
         tool_args = tool_call.get('args', {})
         tool_id = tool_call.get('id', f"call_{call_index}")
         
-        print(f"[{self.name}] Executing {tool_name} with args: {tool_args}")
+        if self.verbose:
+            print(f"[{self.name}] Executing {tool_name} with args: {tool_args}")
         
         # Handle special tools
         if tool_name == "request_code_generation":
@@ -218,7 +221,8 @@ class LlamaAgent(BaseAgent):
         
         if result.success:
             formatted_result["data"] = result.data
-            print(f"[{self.name}] ✅ {tool_name} executed successfully")
+            if self.verbose:
+                print(f"[{self.name}] ✅ {tool_name} executed successfully")
         else:
             formatted_result["error"] = result.error
             print(f"[{self.name}] ❌ {tool_name} failed: {result.error}")
@@ -279,17 +283,27 @@ IMPORTANT GUIDELINES:
 1. When users ask about "this project", "the README", "the codebase", etc., use file_manager to read relevant files first
    - For README questions: Use file_manager with "README.md" as the file_path
    - For project questions: Use file_manager to read README.md, then other relevant files
-2. For file operations, always specify the operation and file_path clearly
-3. Use tools proactively to provide accurate, file-based information
-4. Always provide specific, helpful information based on actual file contents
-5. If you can't find a file, try common variations (README.md, readme.md, README.txt, etc.)
+
+2. For file operations, choose the right operation:
+   - READ: Use operation="read" to read file contents
+   - WRITE: Use operation="write" to completely replace file contents  
+   - APPEND: Use operation="append" to add content to end of existing file
+   - CREATE: Use operation="create" to create empty file
+   - LIST: Use operation="list" to list directory contents
+
+3. Git operations:
+   - For new branches: Use operation="checkout" with create_new=true and branch="branch-name"
+   - For pushing to specific branch: Use operation="push" with branch="branch-name"
+   - For simple push: Use operation="push" without branch parameter
+
+4. When user says "append X to file Y" or "add X to .gitignore", use append operation, not write
+5. Always provide specific, helpful information based on actual file contents
 
 Tool Usage Examples:
-- To read README: Use file_manager with file_path="README.md"
-- To list files: Use file_manager with operation="list" and directory="."
-- To read any file: Use file_manager with file_path="path/to/file"
+- To read README: Use file_manager with file_path="README.md", operation="read"
+- To append to .gitignore: Use file_manager with file_path=".gitignore", operation="append", content="new_line"
+- To create new branch: Use git_manager with operation="checkout", branch="new-branch", create_new=true
 
-When you need to use tools, the system will automatically handle the tool calls.
 Focus on providing helpful, accurate responses based on the tool results."""
 
     def _build_message_history(self, system_prompt: str, user_input: str) -> List[BaseMessage]:
