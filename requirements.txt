@@ -4,6 +4,7 @@ langchain
 langchain-community
 langchain-core
 langchain-google-genai
+langchain-groq
 
 # Google Generative AI
 google-genai
@@ -13,13 +14,10 @@ httpx
 
 # Vector stores and embeddings
 faiss-cpu
+numpy
 
 # Data handling and utilities
 pydantic
 typing-extensions
 python-dotenv
-
-# Additional utilities for code analysis
-pathlib
 dataclasses-json
-groq

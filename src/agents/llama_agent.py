@@ -1,53 +1,80 @@
 """
 LLaMA 3.3 Orchestrator Agent - Handles user input, tool calls, and workflow management.
+Enhanced with modern tool calling patterns and proper Groq tool use integration.
 """
 
 import json
 import os
 import asyncio
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage, BaseMessage
 from langchain_core.tools import Tool
 from langchain_core.output_parsers import StrOutputParser
-from pydantic import SecretStr
+from pydantic import SecretStr, BaseModel, Field
 
 from ..agents.base_agent import BaseAgent, AgentMessage, AgentConfig, SassLevel
 from ..tools.tool_registry import ToolRegistry
 from ..tools.base_tool import ToolResult
 
 
+class ToolCallRequest(BaseModel):
+    """Pydantic model for tool call requests following OpenAI/Anthropic format."""
+    id: str = Field(description="Unique identifier for the tool call")
+    name: str = Field(description="Name of the tool to call")
+    arguments: Dict[str, Any] = Field(description="Arguments to pass to the tool")
+
+
 class LlamaAgent(BaseAgent):
-    """LLaMA 3.3 agent for orchestration and tool management using LangChain ChatGroq."""
+    """
+    LLaMA 3.3 agent for orchestration and tool management using LangChain ChatGroq.
+    Enhanced with modern tool calling patterns and proper Groq tool use integration.
+    """
 
     def __init__(self, config: AgentConfig, tool_registry: ToolRegistry):
         super().__init__(config)
         self.tool_registry = tool_registry
         self.gemini_agent = None  # Will be set by the orchestrator
         self.llm = None
+        self.langchain_history: List[BaseMessage] = []
 
     async def initialize(self) -> bool:
-        """Initialize the LLaMA agent with LangChain ChatGroq."""
+        """Initialize the LLaMA agent with LangChain ChatGroq and proper tool binding."""
         try:
             self.groq_api_key = os.getenv("GROQ_API_KEY")
             if not self.groq_api_key:
                 print(f"[{self.name}] Warning: GROQ_API_KEY not set. Tool use will not work.")
+                return False
+                
+            # Initialize the ChatGroq client with tool support
             self.llm = ChatGroq(
-                api_key=SecretStr(self.groq_api_key) if self.groq_api_key else None,
-                model="llama-3.3-70b-versatile",
+                api_key=SecretStr(self.groq_api_key),
+                model="llama-3.3-70b-versatile",  # Supports tool use and parallel calls
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
             )
-            print(f"[{self.name}] LLaMA agent initialized (LangChain ChatGroq mode)")
+            
+            # Bind tools to the LLM using LangChain's tool binding
+            tools = self._get_langchain_tools()
+            if tools:
+                # Use bind_tools for proper function calling format
+                self.llm = self.llm.bind_tools(tools, tool_choice="auto")
+                print(f"[{self.name}] Bound {len(tools)} tools to LLM")
+            
+            print(f"[{self.name}] LLaMA agent initialized with proper tool calling support")
             return True
         except Exception as e:
             print(f"[{self.name}] Failed to initialize: {e}")
             return False
 
     async def process_message(self, message: AgentMessage) -> AgentMessage:
-        """Process user message and orchestrate the workflow using LangChain ChatGroq tool calling."""
+        """
+        Process user message using modern workflow with proper tool calling.
+        Supports both single and multi-turn conversations with tool use.
+        """
         self.add_to_history(message)
+        
         try:
             if not self.llm:
                 return self._create_response(
@@ -55,54 +82,35 @@ class LlamaAgent(BaseAgent):
                     "I'm not fully initialized. Please check if GROQ_API_KEY is set.",
                     {}
                 )
-            system_prompt = (
-                "You are Symbiote, an agentic coding assistant. "
-                f"Personality: {self.get_sass_prompt()} "
-                "You can call tools to interact with files, git, shell, and more. "
-                "If the user requests code generation, call the 'request_code_generation' tool."
-            )
-            lc_messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=message.content.get("text", "")),
-            ]
+
+            # Build system prompt with modern patterns
+            system_prompt = self._build_system_prompt()
             user_input = message.content.get("text", "")
-            # Detect if code generation is requested
-            if any(word in user_input.lower() for word in ["generate", "create", "code", "calculator", "script"]):
-                # Actually call the code generation tool
-                code_tool = None
-                for tool in self._get_langchain_tools():
-                    if tool.name == "request_code_generation":
-                        code_tool = tool
-                        break
-                if code_tool:
-                    code_result = code_tool.func(user_request=user_input)
-                    # If async, run it in event loop
-                    if asyncio.iscoroutine(code_result):
-                        code_result = await code_result
-                    response_text = f"[TOOL CALLED: request_code_generation]\n{code_result}"
-                    return self._create_response(message, response_text, {"request_code_generation": code_result})
-            # Use the direct tool execution approach based on keywords
-            tool_results = await self._execute_tools_for_request(user_input)
-            try:
-                # We'll use the raw LLM without tool calling for now
-                response = self.llm.invoke(
-                    f"System: {system_prompt}\nUser: {user_input}"
-                )
-                # Extract string content from various possible response types
-                if hasattr(response, 'content'):
-                    response_text = str(response.content)
-                else:
-                    response_text = str(response)
-            except Exception:
-                # Fallback response
-                response_text = "I understand your request. Let me help with that."
-            # Format response with tool results if any tools were executed
-            if tool_results:
-                formatted_response = self._format_response_with_tools(response_text, tool_results)
-                return self._create_response(message, formatted_response, tool_results)
-            else:
-                # Return the original LLM response if no tools were executed
-                return self._create_response(message, response_text, {})
+            
+            # Build message history for multi-turn conversations
+            messages = self._build_message_history(system_prompt, user_input)
+            
+            # Get LLM response with tool calling support
+            response = await self._get_llm_response(messages)
+            
+            # Process any tool calls with modern patterns
+            final_response, tool_results = await self._process_tool_calls(response, messages)
+            
+            # Update conversation history
+            self.langchain_history.extend(messages[1:])  # Skip system message
+            if hasattr(response, 'tool_calls') and response.tool_calls:
+                self.langchain_history.append(response)
+                if tool_results:
+                    # Add tool results to history
+                    for tool_result in tool_results:
+                        tool_msg = ToolMessage(
+                            content=json.dumps(tool_result),
+                            tool_call_id=getattr(tool_result, 'tool_call_id', 'unknown')
+                        )
+                        self.langchain_history.append(tool_msg)
+            
+            return self._create_response(message, final_response, tool_results)
+            
         except Exception as e:
             error_response = f"Oops! Something went wrong: {str(e)}"
             if self.sass_level.value >= 7:
@@ -114,93 +122,357 @@ class LlamaAgent(BaseAgent):
                 content={"text": error_response, "error": str(e)},
                 timestamp=datetime.now().isoformat(),
             )
-        return AgentMessage(
-            sender=self.name,
-            recipient=message.sender,
-            message_type="error",
-            content={"text": "No response generated.", "error": "No response generated."},
-            timestamp=datetime.now().isoformat(),
-        )
 
-    def _get_langchain_tools(self):
-        """Wrap registered tools as LangChain tools."""
-        from langchain_core.tools import Tool
+    async def _get_llm_response(self, messages: List[BaseMessage]) -> Any:
+        """Get response from LLM with proper error handling."""
+        try:
+            if self.llm is None:
+                raise Exception("LLM not initialized")
+            # Use ainvoke for async operation
+            response = await self.llm.ainvoke(messages)
+            return response
+        except Exception as e:
+            print(f"[{self.name}] Error getting LLM response: {e}")
+            raise
+
+    async def _process_tool_calls(self, response: Any, messages: List[BaseMessage]) -> tuple[str, Dict[str, Any]]:
+        """
+        Process tool calls with modern patterns.
+        Returns (final_response_text, tool_results_dict)
+        """
+        tool_results = {}
         
-        lc_tools = []
-        
-        # Create a wrapper for all registered tools
-        for tool_name in self.tool_registry.list_tools():
-            symbiote_tool = self.tool_registry.get_tool(tool_name)
-            if not symbiote_tool:
-                continue
+        # Check if response contains tool calls (LangChain format)
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            print(f"[{self.name}] Processing {len(response.tool_calls)} tool call(s)...")
             
-            # Create a wrapper function for this tool
-            def create_tool_wrapper(tool):
-                def wrapper(**kwargs):
-                    # We need to run the async tool in a synchronous context
-                    loop = asyncio.get_event_loop()
-                    result = loop.run_until_complete(tool.execute(kwargs))
-                    if result.success:
-                        return json.dumps(result.data)
-                    else:
-                        return f"Error: {result.error}"
-                return wrapper
+            # Execute all tool calls (supports parallel execution)
+            tool_messages = []
+            for i, tool_call in enumerate(response.tool_calls):
+                try:
+                    result = await self._execute_single_tool_call(tool_call, i)
+                    tool_results[f"{tool_call['name']}_{i}"] = result
+                    
+                    # Create tool message for conversation continuity
+                    tool_msg = ToolMessage(
+                        content=json.dumps(result),
+                        tool_call_id=tool_call.get('id', f"call_{i}")
+                    )
+                    tool_messages.append(tool_msg)
+                    
+                except Exception as e:
+                    error_result = {
+                        "success": False,
+                        "error": str(e),
+                        "tool_call_id": tool_call.get('id', f"call_{i}")
+                    }
+                    tool_results[f"{tool_call['name']}_{i}"] = error_result
+                    print(f"[{self.name}] ❌ Tool call failed: {e}")
             
-            # Create and add this tool
-            lc_tool = Tool(
-                name=symbiote_tool.name,
-                description=symbiote_tool.description,
-                func=create_tool_wrapper(symbiote_tool)
-            )
-            lc_tools.append(lc_tool)
-        
-        # Add Gemini code generation as a tool
-        def code_gen_wrapper(user_request: str):
-            if not self.gemini_agent:
-                return "Gemini agent not connected."
+            # If we have tool results, get final response from LLM
+            if tool_messages:
+                # Add assistant message and tool results to conversation
+                messages.append(response)
+                messages.extend(tool_messages)
                 
+                # Get final response from LLM
+                if self.llm is not None:
+                    final_response = await self.llm.ainvoke(messages)
+                    return self._extract_response_text(final_response), tool_results
+                else:
+                    return "LLM not initialized", tool_results
+        
+        # No tool calls, return response text directly
+        return self._extract_response_text(response), tool_results
+
+    async def _execute_single_tool_call(self, tool_call: Dict[str, Any], call_index: int) -> Dict[str, Any]:
+        """Execute a single tool call and return formatted result."""
+        tool_name = tool_call['name']
+        tool_args = tool_call.get('args', {})
+        tool_id = tool_call.get('id', f"call_{call_index}")
+        
+        print(f"[{self.name}] Executing {tool_name} with args: {tool_args}")
+        
+        # Handle special tools
+        if tool_name == "request_code_generation":
+            return await self._handle_code_generation(tool_args, tool_id)
+        
+        # Handle registry tools
+        tool = self.tool_registry.get_tool(tool_name)
+        if not tool:
+            return {
+                "success": False,
+                "error": f"Tool '{tool_name}' not found",
+                "tool_call_id": tool_id
+            }
+        
+        # Execute the tool
+        result = await tool.execute(tool_args)
+        
+        # Format result with modern patterns
+        formatted_result = {
+            "success": result.success,
+            "tool_call_id": tool_id,
+            "tool_name": tool_name
+        }
+        
+        if result.success:
+            formatted_result["data"] = result.data
+            print(f"[{self.name}] ✅ {tool_name} executed successfully")
+        else:
+            formatted_result["error"] = result.error
+            print(f"[{self.name}] ❌ {tool_name} failed: {result.error}")
+        
+        return formatted_result
+
+    async def _handle_code_generation(self, args: Dict[str, Any], tool_id: str) -> Dict[str, Any]:
+        """Handle code generation requests to Gemini agent."""
+        if not self.gemini_agent:
+            return {
+                "success": False,
+                "error": "Gemini agent not connected",
+                "tool_call_id": tool_id
+            }
+        
+        try:
             # Create request message
             code_request = AgentMessage(
                 sender=self.name,
                 recipient="gemini_agent",
                 message_type="code_generation_request",
-                content={"user_request": user_request, "sass_level": self.sass_level.value},
+                content={
+                    "user_request": args.get("user_request", ""),
+                    "sass_level": self.sass_level.value
+                },
                 timestamp=datetime.now().isoformat(),
             )
             
-            # Process request synchronously through asyncio
-            loop = asyncio.get_event_loop()
-            code_response = loop.run_until_complete(
-                self.gemini_agent.process_message(code_request)
-            )
+            # Process request
+            code_response = await self.gemini_agent.process_message(code_request)
             
-            return code_response.content.get("generated_code", "")
+            return {
+                "success": True,
+                "data": {
+                    "generated_code": code_response.content.get("generated_code", ""),
+                    "explanation": code_response.content.get("explanation", "")
+                },
+                "tool_call_id": tool_id
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "tool_call_id": tool_id
+            }
+
+    def _build_system_prompt(self) -> str:
+        """Build system prompt with modern patterns."""
+        available_tools_info = self._get_tools_description()
         
-        # Add the code generation tool
-        lc_tools.append(
-            Tool(
-                name="request_code_generation",
-                description="Request code generation from the Gemini agent.",
-                func=code_gen_wrapper
-            )
-        )
+        return f"""You are Symbiote, an agentic coding assistant with access to various tools.
+Personality: {self.get_sass_prompt()}
+
+You have access to the following tools:
+{available_tools_info}
+
+IMPORTANT GUIDELINES:
+1. When users ask about "this project", "the README", "the codebase", etc., use file_manager to read relevant files first
+   - For README questions: Use file_manager with "README.md" as the file_path
+   - For project questions: Use file_manager to read README.md, then other relevant files
+2. For file operations, always specify the operation and file_path clearly
+3. Use tools proactively to provide accurate, file-based information
+4. Always provide specific, helpful information based on actual file contents
+5. If you can't find a file, try common variations (README.md, readme.md, README.txt, etc.)
+
+Tool Usage Examples:
+- To read README: Use file_manager with file_path="README.md"
+- To list files: Use file_manager with operation="list" and directory="."
+- To read any file: Use file_manager with file_path="path/to/file"
+
+When you need to use tools, the system will automatically handle the tool calls.
+Focus on providing helpful, accurate responses based on the tool results."""
+
+    def _build_message_history(self, system_prompt: str, user_input: str) -> List[BaseMessage]:
+        """Build message history for multi-turn conversations."""
+        messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
         
-        return lc_tools
+        # Add relevant conversation history (last 10 messages to avoid context overflow)
+        if self.langchain_history:
+            messages.extend(self.langchain_history[-10:])
+        
+        # Add current user message
+        messages.append(HumanMessage(content=user_input))
+        
+        return messages
+
+    def _extract_response_text(self, response: Any) -> str:
+        """Extract text content from LLM response."""
+        if hasattr(response, 'content'):
+            return str(response.content)
+        return str(response)
+
+    def _get_langchain_tools(self) -> List[Tool]:
+        """
+        Create LangChain tools with proper schema definitions for function calling.
+        """
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel, Field
+        
+        tools = []
+        
+        # File Manager Tool
+        class FileManagerInput(BaseModel):
+            file_path: str = Field(description="Path to the file to read or operate on")
+            operation: str = Field(default="read", description="Operation to perform: read, write, create, delete, list, exists")
+            content: Optional[str] = Field(default=None, description="Content to write (for write operation)")
+        
+        async def file_manager_func(file_path: str, operation: str = "read", content: Optional[str] = None):
+            """Read, write, or manage files. Default operation is read."""
+            try:
+                file_tool = self.tool_registry.get_tool("file_manager")
+                if not file_tool:
+                    return "File manager tool not available"
+                
+                params = {"operation": operation, "file_path": file_path}
+                if content is not None:
+                    params["content"] = content
+                
+                result = await file_tool.execute(params)
+                if result.success:
+                    return json.dumps(result.data)
+                else:
+                    return f"Error: {result.error}"
+            except Exception as e:
+                return f"Error: {str(e)}"
+        
+        tools.append(StructuredTool.from_function(
+            func=file_manager_func,
+            name="file_manager",
+            description="Read, write, create, delete, or list files. Use file_path to specify the target file.",
+            args_schema=FileManagerInput
+        ))
+        
+        # Git Manager Tool
+        class GitManagerInput(BaseModel):
+            operation: str = Field(description="Git operation: status, add, commit, push, pull, log, diff")
+            path: Optional[str] = Field(default=".", description="Path for git operations")
+            message: Optional[str] = Field(default=None, description="Commit message (for commit operation)")
+        
+        async def git_manager_func(operation: str, path: str = ".", message: Optional[str] = None):
+            """Execute git operations like status, add, commit, etc."""
+            try:
+                git_tool = self.tool_registry.get_tool("git_manager")
+                if not git_tool:
+                    return "Git manager tool not available"
+                
+                params = {"operation": operation, "path": path}
+                if message:
+                    params["message"] = message
+                
+                result = await git_tool.execute(params)
+                if result.success:
+                    return json.dumps(result.data)
+                else:
+                    return f"Error: {result.error}"
+            except Exception as e:
+                return f"Error: {str(e)}"
+        
+        tools.append(StructuredTool.from_function(
+            func=git_manager_func,
+            name="git_manager",
+            description="Execute git operations like status, add, commit, push, pull, log, diff",
+            args_schema=GitManagerInput
+        ))
+        
+        # Shell Executor Tool
+        class ShellExecutorInput(BaseModel):
+            command: str = Field(description="Shell command to execute")
+            timeout: Optional[int] = Field(default=30, description="Timeout in seconds")
+        
+        async def shell_executor_func(command: str, timeout: int = 30):
+            """Execute shell commands safely."""
+            try:
+                shell_tool = self.tool_registry.get_tool("shell_executor")
+                if not shell_tool:
+                    return "Shell executor tool not available"
+                
+                result = await shell_tool.execute({"command": command, "timeout": timeout})
+                if result.success:
+                    return json.dumps(result.data)
+                else:
+                    return f"Error: {result.error}"
+            except Exception as e:
+                return f"Error: {str(e)}"
+        
+        tools.append(StructuredTool.from_function(
+            func=shell_executor_func,
+            name="shell_executor",
+            description="Execute shell commands safely with timeout protection",
+            args_schema=ShellExecutorInput
+        ))
+        
+        # Code Generation Tool
+        class CodeGenerationInput(BaseModel):
+            user_request: str = Field(description="Description of what code to generate")
+        
+        async def code_generation_func(user_request: str):
+            """Generate code using the Gemini agent."""
+            if not self.gemini_agent:
+                return json.dumps({"error": "Gemini agent not connected"})
+                
+            try:
+                # Create request message
+                code_request = AgentMessage(
+                    sender=self.name,
+                    recipient="gemini_agent",
+                    message_type="code_generation_request",
+                    content={"user_request": user_request, "sass_level": self.sass_level.value},
+                    timestamp=datetime.now().isoformat(),
+                )
+                
+                # Process request
+                code_response = await self.gemini_agent.process_message(code_request)
+                
+                return json.dumps({
+                    "generated_code": code_response.content.get("generated_code", ""),
+                    "explanation": code_response.content.get("explanation", "")
+                })
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+        
+        tools.append(StructuredTool.from_function(
+            func=code_generation_func,
+            name="request_code_generation",
+            description="Request code generation from the Gemini agent. Provide a clear description of what code you need.",
+            args_schema=CodeGenerationInput
+        ))
+        
+        return tools
 
     def _create_response(
         self,
         original_message: AgentMessage,
         main_content: str,
-        tool_results: Dict[str, ToolResult],
+        tool_results: Dict[str, Any],
     ) -> AgentMessage:
         """Create a response message."""
+        # Handle both ToolResult objects and dictionaries
+        processed_results = {}
+        for k, v in tool_results.items():
+            if hasattr(v, 'data'):
+                # It's a ToolResult object
+                processed_results[k] = v.data
+            else:
+                # It's already a dictionary
+                processed_results[k] = v
+        
         return AgentMessage(
             sender=self.name,
             recipient=original_message.sender,
             message_type="response",
             content={
                 "text": main_content,
-                "tool_results": {k: v.data for k, v in tool_results.items()},
+                "tool_results": processed_results,
                 "sass_level": self.sass_level.value,
             },
             timestamp=datetime.now().isoformat(),
@@ -209,152 +481,6 @@ class LlamaAgent(BaseAgent):
     def set_gemini_agent(self, gemini_agent):
         """Set the Gemini agent for code generation requests."""
         self.gemini_agent = gemini_agent
-
-    async def _execute_tools_for_request(self, user_input: str) -> Dict[str, Any]:
-        """Execute tools based on user request analysis."""
-        tool_results = {}
-        user_lower = user_input.lower()
-
-        try:
-            # Determine which tools to execute based on keywords
-            if any(
-                keyword in user_lower
-                for keyword in ["list", "files", "directory", "ls", "dir"]
-            ):
-                file_tool = self.tool_registry.get_tool("file_manager")
-                if file_tool:
-                    result = await file_tool.execute(
-                        {"operation": "list", "directory": "."}
-                    )
-                    tool_results["file_list"] = result
-
-            if any(
-                keyword in user_lower
-                for keyword in ["git", "status", "commit", "push", "pull"]
-            ):
-                git_tool = self.tool_registry.get_tool("git_manager")
-                if git_tool:
-                    # Determine git operation
-                    if "status" in user_lower or "git" in user_lower:
-                        result = await git_tool.execute({"operation": "status"})
-                        tool_results["git_status"] = result
-                    if "commit" in user_lower:
-                        result = await git_tool.execute(
-                            {"operation": "add", "files": "."}
-                        )
-                        tool_results["git_add"] = result
-                        if "message" in user_lower or "commit" in user_lower:
-                            commit_msg = "Auto commit via Symbiote"
-                            result = await git_tool.execute(
-                                {"operation": "commit", "message": commit_msg}
-                            )
-                            tool_results["git_commit"] = result
-                    if "push" in user_lower:
-                        result = await git_tool.execute({"operation": "push"})
-                        tool_results["git_push"] = result
-
-            if any(
-                keyword in user_lower
-                for keyword in ["run", "execute", "command", "shell"]
-            ):
-                shell_tool = self.tool_registry.get_tool("shell_executor")
-                if shell_tool:
-                    # Extract command or use default
-                    if "ls" in user_lower:
-                        result = await shell_tool.execute({"command": "ls -la"})
-                        tool_results["shell_ls"] = result
-                    elif "pwd" in user_lower:
-                        result = await shell_tool.execute({"command": "pwd"})
-                        tool_results["shell_pwd"] = result
-
-        except Exception as e:
-            tool_results["error"] = {"error": str(e)}
-
-        return tool_results
-
-    def _format_response_with_tools(
-        self, base_response: str, tool_results: Dict[str, Any]
-    ) -> str:
-        """Format response with tool execution results."""
-        if not tool_results:
-            return base_response
-
-        response_parts = [base_response]
-
-        for tool_name, result in tool_results.items():
-            # Handle various result formats
-            if isinstance(result, dict) and "error" in result:
-                # Handle error dict
-                response_parts.append(f"\n❌ {tool_name}: {result.get('error', 'Unknown error')}")
-            elif isinstance(result, ToolResult):
-                # Handle ToolResult object
-                if result.success:
-                    response_parts.append(f"\n✅ {tool_name}: {self._summarize_tool_result(result)}")
-                else:
-                    response_parts.append(f"\n❌ {tool_name}: {result.error}")
-            else:
-                # Generic handling for any other type
-                response_parts.append(f"\n✅ {tool_name}: {str(result)[:200]}")
-
-        return "\n".join(response_parts)
-
-    def _summarize_tool_result(self, result) -> str:
-        """Create a summary of tool execution result."""
-        if hasattr(result, "data"):
-            data = result.data
-            if "items" in data:  # File listing
-                return f"Found {len(data['items'])} items"
-            elif "output" in data:  # Git/shell output
-                output = data["output"]
-                return output[:100] + "..." if len(output) > 100 else output
-            else:
-                return str(data)[:100]
-        return str(result)[:100]
-
-    async def _execute_tool_call(
-        self, function_name: str, function_args: Dict[str, Any]
-    ) -> ToolResult:
-        """Execute a tool call and return the result."""
-        try:
-            if function_name == "request_code_generation":
-                # Handle code generation request
-                if self.gemini_agent:
-                    user_request = function_args.get("user_request", "")
-                    # Create a message for Gemini
-                    gemini_message = AgentMessage(
-                        sender=self.name,
-                        recipient="gemini_coder",
-                        message_type="code_request",
-                        content={"text": user_request},
-                        timestamp=datetime.now().isoformat(),
-                    )
-                    response = await self.gemini_agent.process_message(gemini_message)
-                    return ToolResult(
-                        success=True,
-                        data={"generated_code": response.content.get("text", "")},
-                        error="",
-                    )
-                else:
-                    return ToolResult(
-                        success=False,
-                        data={},
-                        error="Gemini agent not available for code generation",
-                    )
-            else:
-                # Execute regular tool
-                tool = self.tool_registry.get_tool(function_name)
-                if tool:
-                    return await tool.execute(function_args)
-                else:
-                    return ToolResult(
-                        success=False,
-                        data={},
-                        error=f"Tool '{function_name}' not found",
-                    )
-        except Exception as e:
-            return ToolResult(
-                success=False, data={}, error=f"Tool execution failed: {str(e)}"
-            )
 
     def _format_tool_output(self, tool_result: ToolResult) -> str:
         """Format tool output for display."""
@@ -383,3 +509,14 @@ class LlamaAgent(BaseAgent):
             return f"Generated code: {code}"
         else:
             return str(data)[:200]
+
+    def _get_tools_description(self) -> str:
+        """Generate a description of available tools for the LLM."""
+        tools_info = []
+        for tool_name in self.tool_registry.list_tools():
+            tool = self.tool_registry.get_tool(tool_name)
+            if tool:
+                tool_info = tool.get_info()
+                tools_info.append(f"• {tool_info.name}: {tool_info.description}")
+        
+        return "\n".join(tools_info) if tools_info else "No tools available"
