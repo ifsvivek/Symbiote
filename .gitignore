@@ -2,5 +2,5 @@
 .venv/
 __pycache__/
 *.pyc
-symbiote_memory/
+memory_store/
 DOC/
